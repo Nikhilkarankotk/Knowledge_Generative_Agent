@@ -1,0 +1,113 @@
+import { Injectable, inject } from '@angular/core';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { Observable } from 'rxjs';
+
+@Injectable({
+  providedIn: 'root',
+})
+export class Api {
+  private http = inject(HttpClient);
+  private backendUrl = 'http://127.0.0.1:8000/api';
+
+  private activeSessionId: string | null = null;
+
+  public setSessionId(id: string) {
+    this.activeSessionId = id;
+    localStorage.setItem('chatbot_session_id', id);
+  }
+
+  public getSessionId(): string {
+    if (this.activeSessionId) return this.activeSessionId;
+    let sessionId = localStorage.getItem('chatbot_session_id');
+    if (!sessionId) {
+      sessionId = 'session_' + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('chatbot_session_id', sessionId);
+    }
+    this.activeSessionId = sessionId;
+    return sessionId;
+  }
+
+  private getChatHeaders(isMultipart: boolean = false): HttpHeaders {
+    let headers = new HttpHeaders({
+      'X-Session-ID': this.getSessionId(),
+      'Accept': '*/*'
+    });
+    
+    if (!isMultipart) {
+      headers = headers.set('Content-Type', 'application/json');
+    }
+    
+    return headers;
+  }
+
+  // --- Chat API ---
+  sendChatMessage(message: string): Observable<any> {
+    return this.http.post(`${this.backendUrl}/chat`, { message }, { headers: this.getChatHeaders(false) });
+  }
+
+  sendChatFile(message: string, file: File): Observable<any> {
+    const formData = new FormData();
+    formData.append('message', message);
+    formData.append('pdf', file);
+    return this.http.post(`${this.backendUrl}/chat`, formData, { headers: this.getChatHeaders(true) });
+  }
+
+  getChatHistory(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/history`, { headers: this.getChatHeaders(false) });
+  }
+
+  // --- Session History API ---
+  getChatSessions(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/history/sessions`, { headers: this.getChatHeaders(false) });
+  }
+
+  deleteChatSession(sessionId: string): Observable<any> {
+    return this.http.delete(`${this.backendUrl}/history/sessions/${sessionId}`);
+  }
+
+  submitFeedback(messageId: number, rating: number, correctedAnswer?: string): Observable<any> {
+    const body = { messageId, rating, correctedAnswer };
+    return this.http.post(`${this.backendUrl}/feedback`, body, { 
+      headers: this.getChatHeaders(false) 
+    });
+  }
+
+  // --- Mistral API ---
+  uploadMistralFileAndMessage(file: File, message: string): Observable<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('message', message);
+    return this.http.post(`${this.backendUrl}/mistral/upload`, formData, { responseType: 'text' as 'json' });
+  }
+
+  // --- RAG API ---
+  ingestRagDocument(file: File): Observable<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.http.post(`${this.backendUrl}/rag/ingest`, formData, { 
+      headers: this.getChatHeaders(true),
+      responseType: 'text' as 'json' 
+    });
+  }
+
+  getAttachedDocuments(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/rag/documents`, {
+      headers: this.getChatHeaders(false)
+    });
+  }
+
+  deleteAttachedDocument(documentId: number): Observable<any> {
+    return this.http.delete(`${this.backendUrl}/rag/documents/${documentId}`, {
+      headers: this.getChatHeaders(false),
+      responseType: 'text' as 'json'
+    });
+  }
+
+  queryRag(query: string): Observable<any> {
+    return this.http.post(`${this.backendUrl}/rag/query`, query, {
+      headers: this.getChatHeaders(false),
+      responseType: 'text' as 'json'
+    });
+  }
+}
+

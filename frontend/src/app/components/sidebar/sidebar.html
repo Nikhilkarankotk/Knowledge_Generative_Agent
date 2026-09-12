@@ -1,0 +1,113 @@
+<div class="sidebar">
+
+  <!-- Logo / Header -->
+  <div class="sidebar-header">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7H4a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2M7 14v2a5 5 0 0 0 10 0v-2H7m5 8a1 1 0 0 1-1-1v-1h2v1a1 1 0 0 1-1 1z"/>
+        </svg>
+      </div>
+      <span class="logo-text">AI Document Assistant</span>
+    </div>
+    <span class="badge">RAG</span>
+  </div>
+
+  <!-- New Chat Button -->
+  <div class="sidebar-actions">
+    <button class="new-chat-btn" (click)="onNewChat()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+      </svg>
+      New Chat
+    </button>
+  </div>
+
+  <!-- Info Cards -->
+  <div class="info-section">
+    <div class="info-card">
+      <div class="info-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="info-title">Upload Document</p>
+        <p class="info-desc">Use the 📎 button in the chat to upload your PDF or Text document</p>
+      </div>
+    </div>
+
+    <div class="info-card">
+      <div class="info-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+        </svg>
+      </div>
+      <div>
+        <p class="info-title">Analyze Content</p>
+        <p class="info-desc">Query and analyze key facts or summaries from your document</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Divider -->
+  <div class="divider"></div>
+
+  <!-- Chat History -->
+  <div class="history-section">
+    <h3 class="section-label">Recent Chats</h3>
+
+    <ul class="history-list" *ngIf="history.length > 0; else noHistory">
+      <li *ngFor="let item of history.slice().reverse()" class="history-item" (click)="onSelectChat(item.sessionId)" (mouseleave)="activeMenu = null">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0; opacity:0.5">
+          <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/>
+        </svg>
+
+        <span class="history-text" *ngIf="renamingSessionId !== item.sessionId">
+          {{ getCustomTitle(item.sessionId) || item.content }}
+        </span>
+
+        <input #nameInput type="text" class="rename-input"
+               *ngIf="renamingSessionId === item.sessionId"
+               [value]="getCustomTitle(item.sessionId) || item.content"
+               (click)="$event.stopPropagation()"
+               (keydown.enter)="saveRename(item.sessionId, nameInput.value)"
+               (keyup.escape)="cancelRename()"
+               (blur)="cancelRename()" />
+        
+        <!-- Three Dots Menu Trigger -->
+        <div class="menu-dots" *ngIf="renamingSessionId !== item.sessionId" (click)="$event.stopPropagation(); toggleMenu(item.sessionId)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+          </svg>
+        </div>
+
+        <!-- Dropdown Dialog -->
+        <div class="dropdown-menu" *ngIf="activeMenu === item.sessionId">
+          <div class="dropdown-item" (click)="$event.stopPropagation(); startRename(item.sessionId)">
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="margin-right:6px">
+                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+             </svg>
+             Rename
+          </div>
+          <div class="dropdown-item delete" (click)="$event.stopPropagation(); deleteChat(item.sessionId)">
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="margin-right:6px">
+                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+             </svg>
+             Delete
+          </div>
+        </div>
+      </li>
+    </ul>
+
+    <ng-template #noHistory>
+      <div class="no-history">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.2">
+          <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/>
+        </svg>
+        <p>No conversations yet</p>
+      </div>
+    </ng-template>
+  </div>
+
+</div>
