@@ -22,7 +22,7 @@ interface Message {
   selector: 'app-chat-interface',
   imports: [CommonModule, FormsModule, AttachedDocuments],
   templateUrl: './chat-interface.html',
-  styleUrl: './chat-interface.css'
+  styleUrls: ['./chat-interface.css', './chat-copilot.css']
 })
 export class ChatInterface implements AfterViewChecked, OnInit {
   private api = inject(Api);
@@ -166,6 +166,23 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         this.cdr.detectChanges();
       }
     });
+  }
+
+  prepareSummary() {
+    this.userInput = 'Summarize the key decisions, risks, and next steps from this conversation.';
+  }
+
+  exportConversation() {
+    const transcript = this.messages.length
+      ? this.messages.map((message) => `${message.role === 'user' ? 'You' : 'Ask PNC'}: ${message.content}`).join('\n\n')
+      : 'Ask PNC conversation\n\nNo messages to export yet.';
+    const blob = new Blob([transcript], { type: 'text/plain;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = 'ask-pnc-conversation.txt';
+    link.click();
+    URL.revokeObjectURL(downloadUrl);
   }
 
   // --- Action Methods ---

@@ -1,0 +1,10 @@
+.pnc-brand { display: flex !important; align-items: center; gap: 8px; width: auto !important; height: auto !important; max-height: none !important; margin-left: 18px; }
+.pnc-mark-crop { display: block !important; width: 30px !important; height: 30px !important; border-radius: 50%; overflow: hidden; position: relative; flex: none; }
+.pnc-mark-crop img { position: absolute !important; display: block; width: 217px !important; max-width: none !important; height: auto !important; left: -11px !important; top: -93px !important; }
+.pnc-wordmark { color: #f5f7fb; font-size: 22px; font-weight: 750; letter-spacing: .02em; }
+.health-pie { background: conic-gradient(#4be49b 0deg 320deg, #f5c15e 320deg 344deg, #fa7f74 344deg 360deg); border-radius: 50%; padding: 8px; display: grid; place-items: center; }
+.health-pie::before { content: ''; position: absolute; inset: 8px; border-radius: 50%; background: #14213c; }
+.health-pie span, .health-pie em { position: relative; z-index: 1; }
+.health-pie span { display: block; text-align: center; line-height: 1; }
+.health-pie small { margin-left: 1px; }
+.health-pie em { color: #8fa1bf; font-size: 8px; font-style: normal; margin-top: -22px; }

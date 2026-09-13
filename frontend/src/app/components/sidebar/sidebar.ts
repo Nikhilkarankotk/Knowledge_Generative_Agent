@@ -6,7 +6,7 @@ import { Api } from '../../services/api/api';
   selector: 'app-sidebar',
   imports: [CommonModule],
   templateUrl: './sidebar.html',
-  styleUrl: './sidebar.css'
+  styleUrls: ['./sidebar.css', './sidebar-pnc.css']
 })
 export class Sidebar implements OnInit {
   private api = inject(Api);

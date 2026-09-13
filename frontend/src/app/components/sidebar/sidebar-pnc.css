@@ -1,0 +1,13 @@
+.sidebar-header { padding: 20px 22px 14px; }
+.logo { gap: 0; }
+.ask-pnc { font-size: 1.5rem; }
+.ask-word { color: #f5f7fb; }
+.enterprise-brain { font-size: .72rem; }
+.pnc-nav { display: flex; flex-direction: column; gap: 3px; padding: 0 12px 10px; }
+.nav-item { display: flex; align-items: center; gap: 12px; width: 100%; height: 35px; padding: 0 12px; border: 0; border-radius: 5px; background: transparent; color: #c1cce0; font: inherit; font-size: .84rem; font-weight: 550; text-align: left; cursor: pointer; }
+.nav-item:hover { background: rgba(68, 128, 230, .13); color: #fff; }
+.nav-item.active { color: #f1f6ff; background: linear-gradient(90deg, #206fc5, #1a58a1); box-shadow: inset 3px 0 #63aaff; }
+.nav-item .material-icons { font-size: 18px; color: #98b8e8; }
+.nav-item.active .material-icons { color: #e7f2ff; }
+.history-icon { font-size: 15px; opacity: .55; }
+.divider { margin: 7px 16px 14px; }
