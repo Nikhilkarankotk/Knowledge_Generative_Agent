@@ -1,4 +1,4 @@
-# Portfolio Chatbot — Python/FastAPI Backend
+# Knowedege Generative agent— Python/FastAPI Backend
 
 FastAPI RAG backend migrated from the original Spring Boot 3.5 (Java 21) chatbot.
 The chat UI lives in [`frontend/`](frontend/README.md); this page covers running the
@@ -71,11 +71,11 @@ Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 ## Docker
 
 ```powershell
-docker build -t portfolio-chatbot .
+docker build -t knowledge_generative_agent .
 docker run -p 8000:8000 `
   -e MISTRAL_API_KEY=your_key `
   -e DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/Knowledge_Gen_Agent `
-  portfolio-chatbot
+  knowledge_generative_agent
 ```
 
 ## Configuration (`.env`)
