@@ -17,6 +17,9 @@ os.environ["DATABASE_URL"] = "sqlite+pysqlite://"
 os.environ["MISTRAL_API_KEY"] = "test-api-key"
 os.environ["LOG_LEVEL"] = "ERROR"
 os.environ["MISTRAL_TIMEOUT_SECONDS"] = "5"
+# Keep the legacy augmented-prompt path for the existing suite; Semantic Kernel agent
+# paths are tested explicitly with scripted chat services (no network).
+os.environ["SK_AGENT_ENABLED"] = "false"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

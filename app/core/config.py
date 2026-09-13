@@ -55,6 +55,25 @@ class Settings(BaseSettings):
     # --- Conversation memory ---
     conversation_max_history: int = 10
 
+    # --- Knowledge Generative Agent (Semantic Kernel, Phase 1) ---
+    # When enabled, ChatService routes user messages through the Semantic Kernel
+    # KnowledgeGenerativeAgent (KnowledgePlugin -> RAG + ConfluencePlugin -> Confluence).
+    sk_agent_enabled: bool = True
+    # Max parallel auto-invocation rounds Semantic Kernel may perform per turn.
+    sk_max_auto_invoke_attempts: int = 10
+    # Per-turn timeout for the agent (includes tool calls + final completion).
+    sk_agent_timeout_seconds: float = 60.0
+
+    # --- Confluence (ConfluencePlugin, Phase 1) ---
+    # Disabled by default: plugins return "not configured" markers when off.
+    confluence_enabled: bool = False
+    confluence_base_url: str = ""
+    confluence_api_token: str = ""
+    confluence_username: str = ""
+    confluence_limit: int = 5
+    confluence_timeout_seconds: float = 15.0
+    confluence_page_char_limit: int = 15000
+
     # --- CORS (matches CorsConfig.java) ---
     cors_origins: list[str] = ["http://localhost:4200"]
 

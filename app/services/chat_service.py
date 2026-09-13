@@ -1,21 +1,32 @@
 """Equivalent of ``ChatService.java``.
 
-Preserves the exact augmented-prompt construction used by the Java application:
-system preamble, optional DOCUMENTS CONTEXT block, INSTRUCTIONS block, conversation
-history exchanges, and the final user message - in that order.
+Two paths:
+
+* **Legacy path** (Semantic Kernel disabled) preserves the exact augmented-prompt
+  construction used by the Java application: system preamble, optional DOCUMENTS
+  CONTEXT block, INSTRUCTIONS block, conversation history exchanges, and the final
+  user message - in that order.
+* **Knowledge Generative Agent path** (``semantic_kernel_factory`` provided) routes
+  the turn through the Semantic Kernel agent (KnowledgePlugin + ConfluencePlugin)
+  with per-session isolation. PostgreSQL ``chat_message`` remains the source of
+  truth; Semantic Kernel's chat history is a runtime view. If the agent fails, the
+  service transparently falls back to the legacy prompt path.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Any
 
 from app.models import ChatMessage
 from app.rag.rag_service import RagService
 from app.repositories import ChatMessageRepository
+from app.services.confluence_service import ConfluenceService
 from app.services.conversation_memory_service import ConversationMemoryService
 from app.services.mistral_api_service import MistralApiService
 from app.services.translation_service import TranslationService
+from app.sk.chat_history_builder import build_agent_chat_history
 
 logger = logging.getLogger(__name__)
 
@@ -28,20 +39,64 @@ class ChatService:
         memory_service: ConversationMemoryService,
         translation_service: TranslationService,
         rag_service: RagService,
+        semantic_kernel_factory: Any = None,
+        confluence_service: ConfluenceService | None = None,
+        max_history: int | None = None,
     ) -> None:
         self._chat_repo = chat_repo
         self._mistral_service = mistral_service
         self._memory_service = memory_service
         self._translation_service = translation_service
         self._rag_service = rag_service
+        # ``object`` with the SemanticKernelFactory interface: build_agent(...) and
+        # run_agent(...). Kept as Any so this module never imports Semantic Kernel.
+        self._semantic_kernel_factory: Any = semantic_kernel_factory
+        self._confluence_service = confluence_service
+        # Number of messages fed as runtime history to the agent (user+assistant rows).
+        self._max_history = max_history if max_history else 20
+
+    # -- Turn processing ----------------------------------------------------------
 
     def process_user_message(self, session_id: str, user_message: str) -> ChatMessage:
-        # Standardizing on English for now
-        user_lang_code = "en"
-
-        # 1. Save Original User Message to DB
+        # 1. Save Original User Message to DB (source of truth)
         user_msg = ChatMessage(session_id=session_id, content=user_message, role="user")
         self._chat_repo.save(user_msg)
+
+        if self._semantic_kernel_factory is not None:
+            try:
+                return self._process_with_knowledge_agent(session_id, user_message)
+            except Exception:
+                # Never lose a turn because the agent broke; fall back to the exact
+                # augmented-prompt path the Java application used.
+                logger.exception(
+                    "Knowledge Generative Agent failed for session %s; using legacy path.",
+                    session_id,
+                )
+        return self._process_with_legacy_prompt(session_id, user_message)
+
+    # -- Knowledge Generative Agent path (Phase 1) --------------------------------
+
+    def _process_with_knowledge_agent(self, session_id: str, user_message: str) -> ChatMessage:
+        history = build_agent_chat_history(
+            self._chat_repo.find_by_session_id(session_id),
+            current_user_message=user_message,
+            max_messages=self._max_history,
+        )
+        agent = self._semantic_kernel_factory.build_agent(
+            rag_service=self._rag_service,
+            session_id=session_id,
+            confluence_service=self._confluence_service,
+        )
+        final_response = self._semantic_kernel_factory.run_agent(agent, history)
+
+        self._memory_service.add_exchange(session_id, user_message, final_response)
+        return self._save_assistant_message(session_id, final_response)
+
+    # -- Legacy augmented-prompt path ---------------------------------------------
+
+    def _process_with_legacy_prompt(self, session_id: str, user_message: str) -> ChatMessage:
+        # Standardizing on English for now
+        user_lang_code = "en"
 
         # 2. Retrieve Knowledge Context (RAG)
         knowledge_context = self._rag_service.retrieve_context(user_message, session_id)
@@ -93,9 +148,14 @@ class ChatService:
         self._memory_service.add_exchange(session_id, user_message, final_response)
 
         # 7. Save Assistant Response to DB
+        return self._save_assistant_message(session_id, final_response, user_lang_code=user_lang_code)
+
+    def _save_assistant_message(
+        self, session_id: str, response: str, *, user_lang_code: str = "en"
+    ) -> ChatMessage:
         ai_msg = ChatMessage(
             session_id=session_id,
-            content=final_response,
+            content=response,
             role="assistant",
             detected_language=user_lang_code,
             is_translated=False,
