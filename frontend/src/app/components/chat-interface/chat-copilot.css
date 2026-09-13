@@ -4,6 +4,31 @@
 .copilot-welcome .empty-icon { width: 62px; height: 62px; border-radius: 22px; background: linear-gradient(135deg, #1c78f2, #845ce7); border: 0; box-shadow: 0 10px 32px rgba(72, 103, 245, .34); }.copilot-welcome .empty-icon svg { width: 31px; height: 31px; color: white; }
 .copilot-label { color: #78a9ff !important; font-size: 11px !important; font-weight: 800; letter-spacing: .16em; }.copilot-welcome h2 { font-size: 29px; background: none; -webkit-text-fill-color: #f3f6ff; }.copilot-welcome > p:not(.copilot-label) { max-width: 590px; font-size: 14px; }
 .copilot-welcome .suggestion-chips { display: grid; grid-template-columns: 1fr 1fr; width: min(100%, 640px); gap: 10px; margin-top: 16px; }.copilot-welcome .chip { min-height: 54px; border-radius: 12px; padding: 12px 15px; background: rgba(27, 42, 73, .7); border-color: rgba(130, 162, 227, .22); text-align: left; }.copilot-welcome .chip:hover { border-color: #6399ff; background: rgba(43, 71, 127, .7); transform: translateY(-2px); }
+.copilot-welcome .empty-icon { animation: copilot-float 4s ease-in-out infinite; }
+@keyframes copilot-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+.copilot-label { transition: letter-spacing .3s ease; }
+.copilot-welcome:hover .copilot-label { letter-spacing: .26em; }
+@keyframes welcome-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.copilot-welcome { animation: welcome-in .6s ease both; }
+.copilot-tools button { position: relative; overflow: hidden; transition: transform .18s ease, box-shadow .18s ease, background .18s ease; }
+.copilot-tools button::after { content: ""; position: absolute; top: 0; bottom: 0; width: 45px; left: -55px; background: linear-gradient(105deg, transparent, rgba(255, 255, 255, .28), transparent); transform: skewX(-18deg); transition: left .5s ease; }
+.copilot-tools button:hover::after { left: 120%; }
+.copilot-tools button:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(30, 74, 158, .35); }
+.copilot-tools button:active { transform: translateY(0) scale(.97); }
+.input-container { transition: border-color .2s ease, box-shadow .2s ease; }
+.input-container:focus-within { border-color: #6399ff; box-shadow: 0 0 0 3px rgba(99, 153, 255, .18), 0 10px 28px rgba(20, 40, 90, .35); }
+.send-btn { transition: transform .15s ease, box-shadow .15s ease; }
+.send-btn:hover:not([disabled]) { transform: scale(1.07); box-shadow: 0 6px 18px rgba(57, 135, 255, .45); }
+.send-btn:active:not([disabled]) { transform: scale(.95); }
+.message-wrapper { animation: msg-in .35s ease both; }
+@keyframes msg-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.history-item { transition: transform .18s ease, background .18s ease, color .18s ease; }
+.history-item:hover { transform: translateX(4px); }
 .input-area { padding: 14px 30px 20px; background: linear-gradient(to top, #0b1220 70%, transparent); }.input-container { max-width: 780px; border-radius: 16px; background: rgba(22, 34, 59, .98); border-color: rgba(134, 163, 219, .25); }.send-btn { border-radius: 11px; background: linear-gradient(135deg, #3987ff, #5b63dc); }.input-hint { color: #7184a7; font-size: 10px; }
 .copilot-tools { max-width: 780px; display: flex; justify-content: flex-end; gap: 8px; margin: 0 auto 9px; }.copilot-tools button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(135, 166, 226, .25); border-radius: 8px; padding: 6px 10px; background: rgba(30, 47, 79, .72); color: #b9c9e6; font: inherit; font-size: 11px; cursor: pointer; }.copilot-tools button:hover { background: rgba(56, 90, 155, .65); color: #fff; }.copilot-tools .material-icons { font-size: 15px; }
+.icon-btn { transition: transform .2s ease; }
+.icon-btn:hover { transform: scale(1.18) rotate(-8deg); }
+.history-item .material-icons { transition: transform .2s ease; }
+.history-item:hover .material-icons { transform: scale(1.2); }
+.no-history .material-icons { animation: copilot-float 3.5s ease-in-out infinite; }
 @media (max-width: 600px) { .copilot-welcome .suggestion-chips { grid-template-columns: 1fr; }.copilot-welcome h2 { font-size: 24px; } }
