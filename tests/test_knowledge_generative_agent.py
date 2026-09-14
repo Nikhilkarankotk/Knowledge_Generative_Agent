@@ -73,6 +73,144 @@ class StubConfluence:
         pass
 
 
+class StubGitHub:
+    def __init__(self, *, enabled: bool = True, fail: bool = False) -> None:
+        self._enabled = enabled
+        self._fail = fail
+        self.searched: list[str] = []
+        self.repo_requests: list[str] = []
+        self._repo_output = (
+            "[Source: GitHub: eng/payments]\n"
+            "URL: https://github.com/eng/payments\n"
+            "Language: Python\n"
+            "Description: Implements the checkout module"
+        )
+        self._code_output = (
+            "[Source: GitHub: eng/payments:src/api.py]\n"
+            "URL: https://github.com/eng/payments/blob/main/src/api.py\n"
+            "Snippet: def charge_payment"
+        )
+        self._readme_output = (
+            "[Source: GitHub: eng/payments]\n"
+            "README of eng/payments\n"
+            "Implements the checkout module."
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def list_allowed_repositories(self) -> str:
+        if self._fail:
+            from app.core.exceptions import GitHubApiError
+
+            raise GitHubApiError("GitHub is down")
+        self.searched.append("list-allowed")
+        return self._repo_output
+
+    def get_repository(self, repo: str) -> str:
+        self.repo_requests.append(f"repo:{repo}")
+        return self._repo_output
+
+    def get_readme(self, repo: str) -> str:
+        if self._fail:
+            from app.core.exceptions import GitHubApiError
+
+            raise GitHubApiError("GitHub is down")
+        self.repo_requests.append(f"readme:{repo}")
+        return self._readme_output
+
+    def list_repository_contents(self, repo: str, path: str = "") -> str:
+        self.repo_requests.append(f"tree:{repo}:{path}")
+        return "[Source: GitHub: eng/payments]/"
+
+    def get_file_content(self, repo: str, path: str) -> str:
+        self.repo_requests.append(f"file:{repo}:{path}")
+        return "[Source: GitHub: eng/payments:src/api.py]\ndef charge_payment(): pass"
+
+    def search_code(self, repository: str, query: str, limit: int | None = None) -> str:
+        if self._fail:
+            from app.core.exceptions import GitHubApiError
+
+            raise GitHubApiError("GitHub is down")
+        self.searched.append(f"code:{query}")
+        return self._code_output
+
+    def get_issue(self, repo: str, issue_number: int) -> str:
+        self.repo_requests.append(f"issue:{repo}#{issue_number}")
+        return "[Source: GitHub: eng/payments#1]\nTitle: Checkout fails"
+
+    def close(self) -> None:
+        pass
+
+
+class StubSharePoint:
+    """SharePointService stand-in that records calls and returns fixed content."""
+
+    def __init__(self, *, enabled: bool = True, fail: bool = False) -> None:
+        self._enabled = enabled
+        self._fail = fail
+        self.searched: list[str] = []
+        self.read_requests: list[tuple[str, str]] = []
+        self._search_output = (
+            "[Source: SharePoint: Onboarding Process.docx]\n"
+            "URL: https://knowledgegenagent.sharepoint.com/sites/KnowledgeGenAgent/Shared "
+            "Documents/sharepoint-rag-knowledge-base/Onboarding Process.docx\n"
+            "Drive id: b!drive\n"
+            "Document id: 01onboard\n"
+            "Size: 2048 bytes\n"
+            "Modified: 2026-02-01T10:00:00Z\n"
+            "Type: file"
+        )
+        self._content_output = (
+            "[Source: SharePoint: Onboarding Process.docx]\n"
+            "URL: https://knowledgegenagent.sharepoint.com/sites/KnowledgeGenAgent/Shared "
+            "Documents/sharepoint-rag-knowledge-base/Onboarding Process.docx\n"
+            "Drive id: b!drive\n"
+            "Document id: 01onboard\n"
+            "New hires are onboarded through the SharePoint site."
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def allowed_sites(self) -> list[str]:
+        return ["knowledgegenagent.sharepoint.com,site,web"]
+
+    def list_allowed_sites(self) -> str:
+        return "[Source: SharePoint] Configured SharePoint sites: knowledgegenagent.sharepoint.com,site,web"
+
+    def search(self, query: str, limit: int | None = None) -> str:
+        if self._fail:
+            from app.core.exceptions import SharePointApiError
+
+            raise SharePointApiError("SharePoint is down")
+        self.searched.append(query)
+        return self._search_output
+
+    def search_file_content(
+        self, query: str, limit: int | None = None
+    ) -> str:
+        if self._fail:
+            from app.core.exceptions import SharePointApiError
+
+            raise SharePointApiError("SharePoint is down")
+        self.searched.append(f"content:{query}")
+        return self._content_output
+
+    def list_files(self, limit: int | None = None) -> str:
+        return "[Source: SharePoint: site kga]\nDocument library drive id: b!drive"
+
+    def get_document_content(self, document_id: str, drive_id: str) -> str:
+        self.read_requests.append((drive_id, document_id))
+        return self._content_output
+
+    def close(self) -> None:
+        pass
+
+
 class RecordingRag:
     """RagService stand-in that records calls and returns a fixed context."""
 
@@ -106,6 +244,8 @@ def run_turn(
     rag=None,
     session_id: str = "s1",
     confluence=None,
+    github=None,
+    sharepoint=None,
     user_message: str = "How do I do this?",
     timeout: float | None = None,
 ) -> str:
@@ -113,6 +253,8 @@ def run_turn(
         rag_service=rag,
         session_id=session_id,
         confluence_service=confluence,
+        github_service=github,
+        sharepoint_service=sharepoint,
     )
     return factory.run_agent(agent, make_history(user_message), timeout=timeout)
 
@@ -122,14 +264,31 @@ def test_plugins_registered_under_expected_names() -> None:
     agent = factory.build_agent(
         rag_service=RecordingRag(context="ctx"),
         confluence_service=StubConfluence(),
+        github_service=StubGitHub(),
+        sharepoint_service=StubSharePoint(),
     )
     plugins = agent.chat_agent.kernel.plugins
-    assert set(plugins.keys()) == {"Knowledge", "Confluence"}
+    assert set(plugins.keys()) == {"Knowledge", "Confluence", "GitHub", "SharePoint"}
     assert set(plugins["Knowledge"].functions.keys()) == {"search_knowledge"}
     assert set(plugins["Confluence"].functions.keys()) == {
         "search_pages",
         "get_page",
         "list_spaces",
+    }
+    assert set(plugins["GitHub"].functions.keys()) == {
+        "list_allowed_repositories",
+        "get_repository",
+        "get_readme",
+        "list_repository_contents",
+        "get_file_content",
+        "search_code",
+        "get_issue",
+    }
+    assert set(plugins["SharePoint"].functions.keys()) == {
+        "search_sharepoint",
+        "search_sharepoint_content",
+        "list_sharepoint_documents",
+        "get_sharepoint_document",
     }
     assert agent.chat_agent.name == AGENT_NAME
 
@@ -319,6 +478,278 @@ def test_empty_knowledge_base_marker_reaches_final_answer() -> None:
     factory, _ = make_factory([("Knowledge", "search_knowledge", {"query": "x"})])
     answer = run_turn(factory, rag=RecordingRag(empty=True), session_id="s1", user_message="anything")
     assert "No documents have been uploaded" in answer
+
+
+def test_system_instructions_mention_github_as_first_class_source() -> None:
+    assert "GitHubPlugin" in SYSTEM_INSTRUCTIONS
+    assert "authoritative source for how systems are actually" in SYSTEM_INSTRUCTIONS
+    assert "invoke GitHubPlugin immediately" in SYSTEM_INSTRUCTIONS
+    assert "compare the\n  documented architecture with the actual code" in SYSTEM_INSTRUCTIONS or (
+        "compare the documented architecture with the actual code" in SYSTEM_INSTRUCTIONS
+    )
+    assert "Do not claim that GitHub contains no relevant code" in SYSTEM_INSTRUCTIONS
+    assert "[Source: GitHub: <owner/repo>:<path>]" in SYSTEM_INSTRUCTIONS
+    assert "list_allowed_repositories first" in SYSTEM_INSTRUCTIONS
+    assert "GITHUB_ALLOWED_REPOSITORIES" in SYSTEM_INSTRUCTIONS
+    assert "search_repositories" not in SYSTEM_INSTRUCTIONS
+
+
+def test_system_instructions_forbid_fabrication_on_retrieval_failure() -> None:
+    # G. A repository-specific question must not fall back to a generic
+    # "typical architecture from common practices" answer when GitHub retrieval
+    # fails; the model must say what could not be retrieved.
+    assert "do not fabricate" in SYSTEM_INSTRUCTIONS
+    assert "could not be retrieved" in SYSTEM_INSTRUCTIONS
+    assert "State clearly and explicitly which information could not be retrieved" in SYSTEM_INSTRUCTIONS
+    assert "answer only what was actually retrieved" in SYSTEM_INSTRUCTIONS
+
+
+def test_system_instructions_contain_grounding_policy() -> None:
+    assert "GROUNDING POLICY" in SYSTEM_INSTRUCTIONS
+    assert "answer only using information retrieved from the configured knowledge sources" in SYSTEM_INSTRUCTIONS
+    assert "Do not infer the application's architecture or functionality from its name" in SYSTEM_INSTRUCTIONS
+    assert "Do not substitute a generic industry architecture" in SYSTEM_INSTRUCTIONS
+    assert "Never fabricate repository contents" in SYSTEM_INSTRUCTIONS
+    assert "Never use information from an unrelated public repository" in SYSTEM_INSTRUCTIONS
+    assert "Never treat a repository mentioned in previous conversation history as\n   authorized unless it is present in GITHUB_ALLOWED_REPOSITORIES" in SYSTEM_INSTRUCTIONS or (
+        "never treat a repository mentioned in previous conversation history" in SYSTEM_INSTRUCTIONS.lower()
+    )
+    assert "I couldn't retrieve sufficient information from the configured <repository>" in SYSTEM_INSTRUCTIONS
+    assert "answer this accurately" in SYSTEM_INSTRUCTIONS
+
+
+def test_system_instructions_forbid_guessing_repo_names_and_existence_claims() -> None:
+    # The reported bug: the agent answered about "E-commerce-Application" (hyphen,
+    # a guessed name) and, on failure, produced a "likely tech stack" from general
+    # knowledge. The instructions must forbid both behaviors.
+    assert "Never construct or guess a GitHub repository name" in SYSTEM_INSTRUCTIONS
+    assert "Never state that a repository does not exist" in SYSTEM_INSTRUCTIONS
+    assert "proof that the repository is absent" in SYSTEM_INSTRUCTIONS
+    assert "do not answer with a" in SYSTEM_INSTRUCTIONS.lower()
+    assert "estimated architecture" in SYSTEM_INSTRUCTIONS.lower()
+    assert "not on repository code" in SYSTEM_INSTRUCTIONS
+    assert "Repository names passed to GitHub functions MUST be exactly the owner/name" in SYSTEM_INSTRUCTIONS
+
+
+def test_routing_implementation_question_invokes_github() -> None:
+    github = StubGitHub()
+    factory, _ = make_factory(
+        [("GitHub", "list_allowed_repositories", {})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        github=github,
+        user_message="Which GitHub repositories are configured for this agent?",
+    )
+
+    assert github.searched == ["list-allowed"]
+    assert "[Source: GitHub: eng/payments]" in answer
+
+
+def test_routing_source_code_question_invokes_github_code_search() -> None:
+    github = StubGitHub()
+    factory, _ = make_factory(
+        [("GitHub", "search_code", {"repository": "eng/payments", "query": "charge_payment"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        github=github,
+        user_message="Where is the charge_payment function implemented in the Payments repository?",
+    )
+
+    assert github.searched == ["code:charge_payment"]
+    assert "[Source: GitHub: eng/payments:src/api.py]" in answer
+
+
+def test_routing_compare_architecture_with_code_invokes_both() -> None:
+    confluence = StubConfluence()
+    github = StubGitHub()
+    factory, _ = make_factory(
+        [
+            ("Confluence", "search_pages", {"query": "Payments architecture"}),
+            ("GitHub", "list_allowed_repositories", {}),
+        ]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        confluence=confluence,
+        github=github,
+        user_message="Compare the documented Payments architecture with the actual code.",
+    )
+
+    assert confluence.searched == ["Payments architecture"]
+    assert github.searched == ["list-allowed"]
+    assert "[Source: Confluence: Roadmap" in answer
+    assert "[Source: GitHub: eng/payments]" in answer
+
+
+def test_system_instructions_mention_sharepoint_as_first_class_source() -> None:
+    assert "SharePointPlugin" in SYSTEM_INSTRUCTIONS
+    assert "approved SharePoint knowledge base" in SYSTEM_INSTRUCTIONS
+    assert "invoke SharePointPlugin immediately" in SYSTEM_INSTRUCTIONS
+    assert "clear and explicit attribution" in SYSTEM_INSTRUCTIONS
+    assert "A SharePoint result exists only if you actually searched" in SYSTEM_INSTRUCTIONS
+    assert "Do not claim that SharePoint contains no relevant information" in SYSTEM_INSTRUCTIONS
+    assert "[Source: SharePoint: <filename>]" in SYSTEM_INSTRUCTIONS
+    assert "SHAREPOINT_ALLOWED_SITES" in SYSTEM_INSTRUCTIONS
+    assert "arbitrary site id, drive id or folder" in SYSTEM_INSTRUCTIONS
+
+
+def test_routing_onboarding_question_invokes_sharepoint_search() -> None:
+    sharepoint = StubSharePoint()
+    factory, _ = make_factory(
+        [("SharePoint", "search_sharepoint", {"query": "onboarding process"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        sharepoint=sharepoint,
+        user_message="Where is the onboarding document for new hires?",
+    )
+
+    assert sharepoint.searched == ["onboarding process"]
+    assert "[Source: SharePoint: Onboarding Process.docx]" in answer
+
+
+def test_routing_sharepoint_content_question_invokes_search_content() -> None:
+    sharepoint = StubSharePoint()
+    factory, _ = make_factory(
+        [("SharePoint", "search_sharepoint_content", {"query": "vacation policy"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        sharepoint=sharepoint,
+        user_message="What does the vacation policy document on SharePoint say?",
+    )
+
+    assert sharepoint.searched == ["content:vacation policy"]
+    assert "New hires are onboarded through the SharePoint site." in answer
+
+
+def test_sharepoint_get_document_follow_up_receives_drive_and_document_ids() -> None:
+    sharepoint = StubSharePoint()
+    factory, _ = make_factory(
+        [
+            ("SharePoint", "search_sharepoint", {"query": "onboarding"}),
+            ("SharePoint", "get_sharepoint_document", {"document_id": "01onboard", "drive_id": "b!drive"}),
+        ]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        sharepoint=sharepoint,
+        user_message="Summarize the onboarding document.",
+    )
+
+    assert sharepoint.read_requests == [("b!drive", "01onboard")]
+    assert "New hires are onboarded through the SharePoint site." in answer
+
+
+def test_sharepoint_failure_becomes_marker_not_exception() -> None:
+    sharepoint = StubSharePoint(fail=True)
+    factory, _ = make_factory(
+        [("SharePoint", "search_sharepoint", {"query": "onboarding"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        sharepoint=sharepoint,
+        user_message="Where is the onboarding document?",
+    )
+
+    assert "currently unavailable" in answer
+
+
+def test_unconfigured_sharepoint_returns_marker() -> None:
+    factory, _ = make_factory([("SharePoint", "search_sharepoint", {"query": "x"})])
+    answer = run_turn(factory, rag=RecordingRag(), user_message="sharepoint?")
+    assert "not configured" in answer
+
+
+def test_github_get_readme_follow_up_receives_repo() -> None:
+    github = StubGitHub()
+    factory, _ = make_factory(
+        [
+            ("GitHub", "list_allowed_repositories", {}),
+            ("GitHub", "get_readme", {"repo": "eng/payments"}),
+        ]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        github=github,
+        user_message="What does the README of the Payments repository say?",
+    )
+
+    assert github.repo_requests == ["readme:eng/payments"]
+    assert "Implements the checkout module." in answer
+
+
+def test_github_failure_becomes_marker_not_exception() -> None:
+    github = StubGitHub(fail=True)
+    factory, _ = make_factory(
+        [("GitHub", "list_allowed_repositories", {})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        github=github,
+        user_message="Which GitHub repositories are configured?",
+    )
+
+    assert "Could not list GitHub repositories" in answer
+
+
+def test_github_404_becomes_marker_in_answer_not_fabricated_generic_answer() -> None:
+    class NotFoundGitHub(StubGitHub):
+        def get_readme(self, repo: str) -> str:  # type: ignore[override]
+            from app.core.exceptions import GitHubApiError
+
+            raise GitHubApiError(f"GitHub resource not found (HTTP 404) at repos/{repo}")
+
+    github = NotFoundGitHub()
+    factory, _ = make_factory(
+        [("GitHub", "list_allowed_repositories", {}), ("GitHub", "get_readme", {"repo": "eng/payments"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        github=github,
+        user_message="What is the architecture of the E-Commerce Application?",
+    )
+
+    # The 404 is surfaced as an honest marker; the answer must not present a
+    # fabricated "typical architecture" as if it came from the repository.
+    assert "Could not retrieve the README of eng/payments" in answer
+    assert "HTTP 404" in answer
+
+
+def test_unconfigured_github_returns_marker() -> None:
+    factory, _ = make_factory(
+        [("GitHub", "list_allowed_repositories", {})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        user_message="Which GitHub repositories are configured?",
+    )
+
+    assert "not configured" in answer
 
 
 def test_confluence_failure_becomes_marker_not_exception() -> None:

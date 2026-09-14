@@ -142,8 +142,113 @@ POST /api/chat
    permission prompt; when no matching page existed it said so honestly.
 6. Repo is public on GitHub; `.env` is gitignored and must stay out before any push.
 
-## Phase 2 candidates
-* GitHub / SharePoint / WebSearch / LlamaIndex knowledge sources as additional tools.
-* Multi-agent orchestration (e.g. separate researcher/summarizer agents).
-* Streaming responses and structured tool-result chaining.
-* Telemetry/OTel spans on agent turns; Confluence rate limiting and pagination.
+---
+
+# Phase 2 Report - GitHubPlugin (read-only GitHub knowledge source)
+
+Goal of Phase 2: add GitHub as a first-class knowledge source for the same
+Knowledge Generative Agent - source code, READMEs, repository files and issues -
+**read-only**, preserving all Phase 1 behaviour. Routing stays semantic and
+agent-driven (Semantic Kernel function calling); no hard-coded keyword maps.
+
+## Summary
+
+* New `GitHubService` (owns GitHub REST API communication) + `GitHubPlugin`
+  (exposes semantic functions), following the exact Confluence-Phase-1 pattern.
+* Seven read-only tools: `list_allowed_repositories`, `get_repository`, `get_readme`,
+  `list_repository_contents`, `get_file_content`, `search_code`, `get_issue`.
+* Repository access is locked to an allowlist (`GITHUB_ALLOWED_REPOSITORIES`),
+  enforced in `GitHubService` *before* any API call: the unrestricted
+  `/search/repositories` and unqualified `/search/code` endpoints were removed,
+  `search_code` is scoped to a single allowlisted repo (with a `repo:owner/name`
+  qualifier), and lists of repos show only the configured repositories. An empty
+  allowlist disables repository access with a controlled "No GitHub repositories
+  are configured for this Knowledge Generative Agent" message - no fallback to
+  global or arbitrary public repositories.
+* Registered as the `GitHub` plugin on every agent; system instructions now list
+  GitHub alongside KnowledgePlugin/ConfluencePlugin with routing rules
+  ("how is this implemented?" -> GitHub, "compare docs with code" -> Confluence +
+  GitHub). No per-request secrets, no write operations anywhere.
+* Auth lives in the service only (`Authorization: Bearer <token>`), never surfaced
+  to the LLM or logs; failure markers keep the auto-invocation loop alive.
+* 250 tests pass (192 pre-existing + 58 new incl. allowlist security tests), `ruff check`
+  and `mypy` clean.
+* Live-validated end-to-end (real Mistral + real GitHub REST API + real Confluence,
+  credentials kept in the gitignored `.env`): the agent automatically invoked
+  `GitHub.list_allowed_repositories` / `get_readme` / `list_repository_contents`,
+  and on a
+  "compare documented architecture with the actual code" question invoked BOTH
+  Confluence and GitHub and synthesized a comparison - with no permission prompts.
+  `scripts/smoke_github_agent.py`, degrades to a clean skip when credentials are
+  absent.
+* Live allowlist enforcement: asking about `ShakibulAkash/ecommerce-web-application`
+  (not in the allowlist) produced `GitHub request rejected:
+  repository='ShakibulAkash/ecommerce-web-application' reason=not_in_allowlist`
+  with no API call and the agent answered with an explicit refusal; a
+  model-hallucinated repo name (`...Knowledge_Generative_AAgent`) was also
+  rejected before any request.
+* Attribution wording hardened: tool results must be cited with the verbatim
+  `[Source: GitHub: <owner/repo>[:<path>]]` / `[Source: Confluence: <title>]` /
+  `[Source: <filename>]` tags (not hyperlinks only), verified live.
+
+## Files
+
+### New production modules
+| File | Responsibility |
+| --- | --- |
+| `app/services/github_service.py` | Read-only GitHub REST client: allowlist-locked repo listing (`list_allowed_repositories`), repo metadata, base64 README+file decode, contents listing, allowlist-scoped code search, issues; Bearer auth; allowlist enforcement before every request; error mapping to `GitHubApiError`/`GitHubRepositoryNotAllowedError`; cap/truncation |
+| `app/plugins/github_plugin.py` | `GitHubPlugin` with 7 `@kernel_function`s behind the auto-invocation loop; "not configured"/failure/allowlist-rejection markers; INFO invocation/result logging |
+
+### Modified
+`app/core/config.py` (`github_*` settings, disabled by default; new
+`GITHUB_ALLOWED_REPOSITORIES` allowlist setting + normalization),
+`app/core/exceptions.py` (`GitHubApiError` + new `GitHubRepositoryNotAllowedError`),
+`app/agents/knowledge_generative_agent.py` (GitHubPlugin in instructions +
+routing rules), `app/sk/semantic_kernel_factory.py` (GitHubPlugin registration +
+`github_service` param), `app/api/dependencies.py` (`GitHubService` singleton +
+factory wiring), `.env.example`, `PHASE1_REPORT.md`
+
+### Tests added
+* `tests/test_github_service.py` - MockTransport: allowlist enforcement
+  (unconfigured repo rejected *before* any API call, `ShakibulAkash/...` never
+  returned, empty-allowlist controlled message, case-insensitive + URL/`.git`
+  normalization, multi-repo scoping), `list_allowed_repositories` never hits the
+  network, `search_code` is repo-qualified only, auth headers, attributed
+  formatting, base64 decode + truncation, rate-limit/error mapping, `from_settings`.
+* `tests/test_config_github.py` - `GITHUB_ALLOWED_REPOSITORIES` parsing: trimming,
+  case-insensitive de-duplication, empty-entry handling, URL/`.git` normalization.
+* `tests/test_github_plugin.py` - argument forwarding (`list_allowed_repositories`
+  no args, `search_code` repository+query), disabled/failure markers, allowlist
+  wording in every description, invocation logging.
+* `tests/test_knowledge_generative_agent.py` - GitHub registered under expected
+  name/functions (no `search_repositories`); routing "how is Payments implemented"
+  -> `list_allowed_repositories`, repo-scoped code-search routing, compare-architecture
+  -> Confluence + GitHub, get_readme follow-up, GitHub failure/unconfigured markers,
+  instructions require the allowlist wording and forbid global search.
+
+### Allowlist enforcement (security fix)
+Root cause: Phase 2 exposed two GitHub endpoints scoped globally by the API
+(`GET /search/repositories`, `GET /search/code`) plus arbitrary per-repo reads, so a
+fine-grained PAT restricted to selected repos could still be used to read *any*
+public repository (e.g. `ShakibulAkash/ecommerce-web-application`).
+
+Fix (defense in depth, authorisation before every request):
+* `GITHUB_ALLOWED_REPOSITORIES` (comma-separated `owner/repo`, normalized/deduped)
+  is enforced in `GitHubService._require_allowed` before any HTTP request; rejected
+  repos raise `GitHubRepositoryNotAllowedError` with the reason and never hit the API.
+* Global repo search removed; `list_allowed_repositories` returns only the configured
+  repos (no network call). Empty allowlist <-> "No GitHub repositories are configured
+  for this Knowledge Generative Agent." and every repo operation is refused.
+* `search_code` now takes `(repository, query)`; the repo must be allowlisted and the
+  GitHub query always carries a `repo:owner/name` qualifier.
+* Plugin/instructions/descriptions only advertise allowlisted repos; safe logs like
+  `GitHub request rejected: repository=... reason=not_in_allowlist` contain no token.
+
+## Next steps
+* Rotate the GitHub fine-grained PAT (it was pasted in chat) via GitHub ->
+  Settings -> Developer settings; update `GITHUB_TOKEN` in the gitignored `.env`.
+  Never commit `.env`.
+* Pagination/rate-limit backoff on GitHub repository/code search at scale.
+* GitHub Enterprise base-URL validation tests.
+* Phase 3: SharePointPlugin - after GitHub is validated live with credentials.
+* Later phases: WebSearchPlugin, DeploymentPlugin (per roadmap).
