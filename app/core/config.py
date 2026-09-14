@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +55,151 @@ class Settings(BaseSettings):
     # --- Conversation memory ---
     conversation_max_history: int = 10
 
+    # --- Knowledge Generative Agent (Semantic Kernel, Phase 1) ---
+    # When enabled, ChatService routes user messages through the Semantic Kernel
+    # KnowledgeGenerativeAgent (KnowledgePlugin -> RAG + ConfluencePlugin -> Confluence).
+    sk_agent_enabled: bool = True
+    # Max parallel auto-invocation rounds Semantic Kernel may perform per turn.
+    sk_max_auto_invoke_attempts: int = 10
+    # Per-turn timeout for the agent (includes tool calls + final completion).
+    # Generous by default: with many allowlisted GitHub repositories the agent may
+    # need several auto-invocation rounds, each an LLM round-trip.
+    sk_agent_timeout_seconds: float = 120.0
+
+    # --- Confluence (ConfluencePlugin, Phase 1) ---
+    # Disabled by default: plugins return "not configured" markers when off.
+    confluence_enabled: bool = False
+    confluence_base_url: str = ""
+    confluence_api_token: str = ""
+    confluence_username: str = ""
+    confluence_limit: int = 5
+    confluence_timeout_seconds: float = 15.0
+    confluence_page_char_limit: int = 15000
+
+    # --- GitHub (GitHubPlugin, Phase 2) ---
+    # Disabled by default: plugins return "not configured" markers when off. The
+    # integration is read-only; use a personal access token with read scopes only.
+    github_enabled: bool = False
+    github_token: str = ""
+    github_base_url: str = "https://api.github.com"
+    github_limit: int = 5
+    github_timeout_seconds: float = 15.0
+    github_repo_char_limit: int = 10000
+    # Comma-separated allowlist of repositories (owner/repo) the agent may read.
+    # Everything outside this list is rejected before any API call and global
+    # repository/code search is disabled. Leave empty to disable GitHub repository
+    # access entirely (the agent answers "No GitHub repositories are configured").
+    github_allowed_repositories: str = ""
+
+    # --- SharePoint Online (SharePointPlugin, Phase 3) ---
+    # Disabled by default: plugins return "not configured" markers when off. The
+    # integration is read-only and app-only (Microsoft Graph client credentials
+    # flow). When SHAREPOINT_TENANT_WIDE=false (default) the scope is the single
+    # configured site + knowledge-base folder allowlists (Sites.Selected only) and
+    # no tenant-wide site discovery/search is used. When SHAREPOINT_TENANT_WIDE=true
+    # the site/folder allowlists are not enforced and the agent may search and read
+    # every SharePoint site and document the application's Microsoft Graph
+    # permission can access (requires the Entra app to hold the broader read
+    # permission, e.g. Sites.Read.All / Files.Read.All for the search JSON API).
+    sharepoint_enabled: bool = False
+    sharepoint_tenant_wide: bool = False
+    # Azure region of the Microsoft 365 tenant, required by the Microsoft Graph
+    # Search API when using application permissions (POST /search/query answers
+    # HTTP 400 "Region is required when request with application permission"
+    # without it). Discover it from the error message / tenant home region, e.g.
+    # "IND". Only used in tenant-wide mode.
+    sharepoint_search_region: str = ""
+    sharepoint_tenant_id: str = ""
+    sharepoint_client_id: str = ""
+    sharepoint_client_secret: str = ""
+    sharepoint_graph_base_url: str = "https://graph.microsoft.com/v1.0"
+    # The SharePoint site to target is resolved at runtime with the documented
+    # Graph form: GET /sites/{hostname}:/{relative-path} (never hard-coded in
+    # business logic). E.g. hostname "knowledgegenagent.sharepoint.com" and
+    # relative path "/sites/KnowledgeGenAgent".
+    sharepoint_site_hostname: str = ""
+    sharepoint_site_relative_path: str = ""
+    # Semicolon-separated allowlist of SharePoint site IDs (Graph site-id form
+    # "host.sharepoint.com,<siteId>,<webId>", as resolved through Microsoft Graph)
+    # the agent may access. Entries are separated with ";" because each site id
+    # itself contains commas. Everything outside this list is rejected before any
+    # further Graph request. Leave empty to disable SharePoint access entirely (the
+    # agent answers "No SharePoint sites are configured").
+    sharepoint_allowed_sites: str = ""
+    # Semicolon-separated allowlist of knowledge-base folders (relative to the
+    # site's primary document library root) the agent may list/search/read. This is
+    # an APPLICATION-LEVEL restriction on top of the Sites.Selected permission:
+    # retrieval never leaves the configured folder(s). E.g.
+    # "sharepoint-rag-knowledge-base". Leave empty (and SHAREPOINT_ENABLED=false)
+    # to disable SharePoint access entirely.
+    sharepoint_allowed_folders: str = ""
+    sharepoint_limit: int = 10
+    sharepoint_timeout_seconds: float = 30.0
+    sharepoint_content_char_limit: int = 20000
+
+    @property
+    def sharepoint_allowed_sites_list(self) -> list[str]:
+        """Parsed, normalized site allowlist from ``SHAREPOINT_ALLOWED_SITES``.
+
+        Entries are separated by ``;`` so a single entry may contain commas (the
+        Graph site-id form is ``host,siteId,webId``). Trims whitespace and
+        surrounding slashes, ignores empty entries and de-duplicates
+        case-insensitively without collapsing punctuation.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        for entry in self.sharepoint_allowed_sites.split(";"):
+            site = _normalize_site_id(entry)
+            if not site:
+                continue
+            if site.lower() in seen:
+                continue
+            seen.add(site.lower())
+            result.append(site)
+        return result
+
+    @property
+    def sharepoint_allowed_folders_list(self) -> list[str]:
+        """Parsed, normalized folder allowlist from ``SHAREPOINT_ALLOWED_FOLDERS``.
+
+        Folders are drive-relative paths (e.g. ``sharepoint-rag-knowledge-base``)
+        separated by ``;``. Unsafe entries (absolute paths, traversal sequences or
+        Graph resource tokens) are dropped so the configured list can only ever
+        name plain relative folder paths.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        for entry in self.sharepoint_allowed_folders.split(";"):
+            folder = _normalize_folder_id(entry)
+            if not folder:
+                continue
+            if folder.lower() in seen:
+                continue
+            seen.add(folder.lower())
+            result.append(folder)
+        return result
+
+    @property
+    def github_allowed_repository_list(self) -> list[str]:
+        """Parsed, normalized allowlist from ``GITHUB_ALLOWED_REPOSITORIES``.
+
+        Trims whitespace and surrounding slashes, ignores empty entries and
+        de-duplicates case-insensitively. Full URLs and trailing ``.git`` suffixes
+        are normalized so ``https://github.com/owner/repo.git`` and
+        ``owner/repo`` compare equal.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        for entry in self.github_allowed_repositories.split(","):
+            repo = _normalize_repository_id(entry)
+            if not repo:
+                continue
+            if repo.lower() in seen:
+                continue
+            seen.add(repo.lower())
+            result.append(repo)
+        return result
+
     # --- CORS (matches CorsConfig.java) ---
     cors_origins: list[str] = ["http://localhost:4200"]
 
@@ -79,6 +224,111 @@ class Settings(BaseSettings):
     @property
     def is_postgres(self) -> bool:
         return self.sqlalchemy_database_url.startswith(("postgresql", "postgres"))
+
+    @model_validator(mode="after")
+    def _validate_sharepoint_config(self) -> Settings:
+        """Fail fast on an enabled but incomplete SharePoint configuration.
+
+        When ``SHAREPOINT_ENABLED`` is true every required SharePoint setting must
+        be present. In scoped mode (default) that is the full set: tenant, client,
+        secret, site hostname/relative path, the site allowlist and the folder
+        allowlist. In tenant-wide mode (``SHAREPOINT_TENANT_WIDE=true``) only the
+        tenant, client, secret and search region are required because the
+        site/folder allowlists are not enforced. A disabled SharePoint integration
+        never blocks startup.
+        """
+        if not self.sharepoint_enabled:
+            return self
+        missing: list[str] = []
+        if not self.sharepoint_tenant_id.strip():
+            missing.append("SHAREPOINT_TENANT_ID")
+        if not self.sharepoint_client_id.strip():
+            missing.append("SHAREPOINT_CLIENT_ID")
+        if not self.sharepoint_client_secret.strip():
+            missing.append("SHAREPOINT_CLIENT_SECRET")
+        if self.sharepoint_tenant_wide:
+            if not self.sharepoint_search_region.strip():
+                missing.append("SHAREPOINT_SEARCH_REGION")
+            if missing:
+                raise ValueError(
+                    "Invalid SharePoint configuration: "
+                    "SHAREPOINT_ENABLED=true with SHAREPOINT_TENANT_WIDE=true but "
+                    "the following required settings are missing or empty: "
+                    + ", ".join(missing)
+                )
+            return self
+        if not self.sharepoint_site_hostname.strip():
+            missing.append("SHAREPOINT_SITE_HOSTNAME")
+        if not self.sharepoint_site_relative_path.strip():
+            missing.append("SHAREPOINT_SITE_RELATIVE_PATH")
+        if not self.sharepoint_allowed_sites_list:
+            missing.append("SHAREPOINT_ALLOWED_SITES")
+        if not self.sharepoint_allowed_folders_list:
+            missing.append("SHAREPOINT_ALLOWED_FOLDERS")
+        if missing:
+            raise ValueError(
+                "Invalid SharePoint configuration: SHAREPOINT_ENABLED=true but the "
+                "following required settings are missing or empty: "
+                + ", ".join(missing)
+            )
+        return self
+
+
+def _normalize_repository_id(value: str) -> str:
+    """Normalize a repository identifier to ``owner/name`` form.
+
+    Accepts ``owner/name``, full URLs (``https://github.com/owner/name``) and
+    trailing ``.git``; strips whitespace and surrounding slashes. Returns ``""``
+    for empty or unusable inputs.
+    """
+    repo = (value or "").strip().strip("/")
+    lower = repo.lower()
+    for prefix in (
+        "https://github.com/",
+        "http://github.com/",
+        "www.github.com/",
+        "github.com/",
+    ):
+        if lower.startswith(prefix):
+            repo = repo[len(prefix):]
+            break
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    return repo.strip()
+
+
+def _normalize_site_id(value: str) -> str:
+    """Normalize a SharePoint site identifier (``host,siteId,webId`` form).
+
+    Trims whitespace and surrounding slashes and returns ``""`` for empty or
+    unusable inputs. The three-segment Graph site-id form used by the
+    sites/{site-id} endpoints is preserved as-is (punctuation is significant).
+    """
+    return (value or "").strip().strip("/")
+
+
+def _normalize_folder_id(value: str) -> str:
+    """Normalize a SharePoint folder allowlist entry.
+
+    Returns a plain drive-relative folder path (e.g. ``sharepoint-rag-knowledge-base``)
+    with whitespace and surrounding slashes trimmed, or ``""`` for empty or unsafe
+    inputs. Absolute paths, ``..`` traversal sequences, backslashes and Graph
+    resource tokens are rejected so the allowlist can only name plain relative paths.
+    """
+    folder = (value or "").strip()
+    if folder.startswith(("/", "\\")) or "\\" in folder:
+        return ""
+    folder = folder.strip("/")
+    lower = folder.lower()
+    if not folder:
+        return ""
+    if ".." in folder.split("/"):
+        return ""
+    if ":" in folder or "@" in folder:
+        return ""
+    if lower.startswith(("http://", "https://", "sites/")):
+        return ""
+    return folder
 
 
 @lru_cache

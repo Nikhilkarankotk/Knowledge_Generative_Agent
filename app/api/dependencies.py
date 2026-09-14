@@ -9,6 +9,7 @@ session (repositories/services) is constructed per request.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 
 from fastapi import Depends, Header
@@ -28,12 +29,17 @@ from app.repositories import (
     FeedbackRepository,
 )
 from app.services.chat_service import ChatService
+from app.services.confluence_service import ConfluenceService
 from app.services.conversation_memory_service import ConversationMemoryService
+from app.services.github_service import GitHubService
 from app.services.mistral_api_service import MistralApiService
 from app.services.mistral_service import MistralService
+from app.services.sharepoint_service import SharePointService
 from app.services.translation_service import TranslationService
 
 DEFAULT_SESSION_ID = "default-session"
+
+logger = logging.getLogger(__name__)
 
 
 # --- Process-level singletons ----------------------------------------------------------
@@ -49,6 +55,10 @@ def _build_singletons() -> tuple[
     TextChunker,
     EmbeddingService,
     Database,
+    ConfluenceService | None,
+    GitHubService | None,
+    SharePointService | None,
+    object | None,
 ]:
     settings = get_settings()
     client = MistralClient.from_settings(settings)
@@ -60,6 +70,25 @@ def _build_singletons() -> tuple[
     text_chunker = TextChunker()
     embedding_service = EmbeddingService.from_client(client)
     database = Database(settings)
+    confluence_service = ConfluenceService.from_settings(settings)
+    github_service = GitHubService.from_settings(settings)
+    sharepoint_service = SharePointService.from_settings(settings)
+    semantic_kernel_factory = None
+    if settings.sk_agent_enabled:
+        from app.sk import SemanticKernelFactory
+
+        semantic_kernel_factory = SemanticKernelFactory(
+            settings,
+            confluence_service=confluence_service,
+            github_service=github_service,
+            sharepoint_service=sharepoint_service,
+            use_loop=True,
+        )
+        logger.info(
+            "Semantic Kernel agent enabled (model=%s, base_url=%s)",
+            settings.mistral_chat_model,
+            settings.mistral_base_url,
+        )
     return (
         settings,
         client,
@@ -71,6 +100,10 @@ def _build_singletons() -> tuple[
         text_chunker,
         embedding_service,
         database,
+        confluence_service,
+        github_service,
+        sharepoint_service,
+        semantic_kernel_factory,
     )
 
 
@@ -85,6 +118,10 @@ def _build_singletons() -> tuple[
     _text_chunker,
     _embedding_service,
     _database,
+    _confluence_service,
+    _github_service,
+    _sharepoint_service,
+    _semantic_kernel_factory,
 ) = _build_singletons()
 
 
@@ -175,4 +212,7 @@ def get_chat_service(
         memory_service=_memory_service,
         translation_service=_translation_service,
         rag_service=rag_service,
+        semantic_kernel_factory=_semantic_kernel_factory,
+        confluence_service=_confluence_service,
+        max_history=_settings.conversation_max_history * 2,
     )
