@@ -6,6 +6,7 @@
   background: var(--bg-color);
   position: relative;
   overflow: hidden;
+  min-height: 0;
 }
 
 /* ── Messages Area ── */
@@ -13,6 +14,8 @@
   flex-grow: 1;
   padding: 32px 40px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -325,6 +328,7 @@
 .input-area {
   padding: 24px 40px 32px;
   background: linear-gradient(to top, var(--bg-color) 60%, transparent);
+  flex-shrink: 0;
 }
 
 .input-container {

@@ -2,7 +2,7 @@ import { Component, inject, ElementRef, ViewChild, AfterViewChecked, ChangeDetec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Api } from '../../services/api/api';
-import { AttachedDocuments, AttachedDocument } from '../attached-documents/attached-documents';
+import { AttachedDocument } from '../attached-documents/attached-documents';
 import { marked } from 'marked';
 
 interface Message {
@@ -20,7 +20,7 @@ interface Message {
 
 @Component({
   selector: 'app-chat-interface',
-  imports: [CommonModule, FormsModule, AttachedDocuments],
+  imports: [CommonModule, FormsModule],
   templateUrl: './chat-interface.html',
   styleUrls: ['./chat-interface.css', './chat-copilot.css']
 })
@@ -101,7 +101,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         this.attachedCollapsed = this.messages.length > 0;
         this.isLoading = false;
         this.cdr.detectChanges();
-        setTimeout(() => this.scrollToBottom(), 100);
+        setTimeout(() => this.scrollToBottom(true), 100);
       },
       error: () => {
         this.isLoading = false;
@@ -153,6 +153,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
           });
         }
         this.cdr.detectChanges();
+        setTimeout(() => this.scrollToBottom(true), 0);
       },
       error: (err: any) => {
         this.isLoading = false;
@@ -164,6 +165,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
           timestamp: new Date()
         });
         this.cdr.detectChanges();
+        setTimeout(() => this.scrollToBottom(true), 0);
       }
     });
   }
@@ -268,9 +270,13 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     return new Date(date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   }
 
-  scrollToBottom(): void {
+  scrollToBottom(force = false): void {
     if (this.chatContainer) {
-      this.chatContainer.nativeElement.scrollTop = this.chatContainer.nativeElement.scrollHeight;
+      const el = this.chatContainer.nativeElement;
+      if (!force && el.scrollHeight - el.scrollTop - el.clientHeight > 80) {
+        return;
+      }
+      el.scrollTop = el.scrollHeight;
     }
   }
 
