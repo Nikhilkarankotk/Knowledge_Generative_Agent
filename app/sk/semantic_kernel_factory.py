@@ -11,7 +11,8 @@ Responsibilities:
   client always operates on its own loop (thread-safe across FastAPI workers).
 * Build per-request ``KnowledgeGenerativeAgent`` instances: a fresh (cheap) Kernel,
    the session-bound plugins (KnowledgePlugin -> RagService, ConfluencePlugin ->
-  ConfluenceService) and the agent. No per-request network clients are created.
+   ConfluenceService, GitHubPlugin -> GitHubService, SharePointPlugin ->
+   SharePointService) and the agent. No per-request network clients are created.
 
 Failure of the LLM/tool loop raises :class:`~app.core.exceptions.KnowledgeAgentError`.
 """
@@ -32,8 +33,12 @@ from app.agents.knowledge_generative_agent import (
 from app.core.config import Settings
 from app.core.exceptions import KnowledgeAgentError
 from app.plugins.confluence_plugin import ConfluencePlugin
+from app.plugins.github_plugin import GitHubPlugin
 from app.plugins.knowledge_plugin import KnowledgePlugin
+from app.plugins.sharepoint_plugin import SharePointPlugin
 from app.services.confluence_service import ConfluenceService
+from app.services.github_service import GitHubService
+from app.services.sharepoint_service import SharePointService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,8 @@ class SemanticKernelFactory:
         *,
         chat_service: Any | None = None,
         confluence_service: ConfluenceService | None = None,
+        github_service: GitHubService | None = None,
+        sharepoint_service: SharePointService | None = None,
         use_loop: bool = True,
     ) -> None:
         from app.sk.compat import apply_py314_compatibility_patch
@@ -55,6 +62,8 @@ class SemanticKernelFactory:
 
         self._settings = settings
         self._confluence_service = confluence_service
+        self._github_service = github_service
+        self._sharepoint_service = sharepoint_service
         self._chat_service = chat_service if chat_service is not None else self._build_chat_service(settings)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
@@ -116,6 +125,8 @@ class SemanticKernelFactory:
         rag_service: Any | None = None,
         session_id: str | None = None,
         confluence_service: ConfluenceService | None = None,
+        github_service: GitHubService | None = None,
+        sharepoint_service: SharePointService | None = None,
         instructions: str = SYSTEM_INSTRUCTIONS,
         plugin_registrations: list[tuple[str, Any]] | None = None,
     ) -> KnowledgeGenerativeAgent:
@@ -129,6 +140,8 @@ class SemanticKernelFactory:
             if rag_service is not None:
                 registrations.append(("Knowledge", KnowledgePlugin(rag_service, session_id or "")))
             registrations.append(("Confluence", ConfluencePlugin(confluence_service or self._confluence_service)))
+            registrations.append(("GitHub", GitHubPlugin(github_service or self._github_service)))
+            registrations.append(("SharePoint", SharePointPlugin(sharepoint_service or self._sharepoint_service)))
             plugin_registrations = registrations
 
         kernel = Kernel()
