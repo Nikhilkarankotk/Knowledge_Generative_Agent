@@ -36,12 +36,9 @@
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
 }
 
-.logo-text {
-  font-size: 1.1rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
-}
+.brand-copy { display: flex; flex-direction: column; line-height: 1.05; }
+.ask-pnc { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.035em; color: #f5a524; }
+.enterprise-brain { margin-top: 4px; color: var(--text-secondary); font-size: .68rem; font-weight: 600; letter-spacing: .02em; }
 
 .badge {
   background: rgba(59, 130, 246, 0.1);
