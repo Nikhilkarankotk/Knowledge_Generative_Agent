@@ -129,8 +129,14 @@ class SemanticKernelFactory:
         sharepoint_service: SharePointService | None = None,
         instructions: str = SYSTEM_INSTRUCTIONS,
         plugin_registrations: list[tuple[str, Any]] | None = None,
+        capture: Any | None = None,
     ) -> KnowledgeGenerativeAgent:
-        """Build a session-bound KnowledgeGenerativeAgent (cheap, per request)."""
+        """Build a session-bound KnowledgeGenerativeAgent (cheap, per request).
+
+        ``capture`` is an optional per-request artifact accumulator
+        (:class:`app.export.capture.RetrievalCapture`) the plugins write their
+        actual retrieval into for the export context.
+        """
         from semantic_kernel import Kernel
         from semantic_kernel.agents import ChatCompletionAgent
         from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
@@ -138,10 +144,10 @@ class SemanticKernelFactory:
         if plugin_registrations is None:
             registrations: list[tuple[str, Any]] = []
             if rag_service is not None:
-                registrations.append(("Knowledge", KnowledgePlugin(rag_service, session_id or "")))
-            registrations.append(("Confluence", ConfluencePlugin(confluence_service or self._confluence_service)))
-            registrations.append(("GitHub", GitHubPlugin(github_service or self._github_service)))
-            registrations.append(("SharePoint", SharePointPlugin(sharepoint_service or self._sharepoint_service)))
+                registrations.append(("Knowledge", KnowledgePlugin(rag_service, session_id or "", capture)))
+            registrations.append(("Confluence", ConfluencePlugin(confluence_service or self._confluence_service, capture)))
+            registrations.append(("GitHub", GitHubPlugin(github_service or self._github_service, capture)))
+            registrations.append(("SharePoint", SharePointPlugin(sharepoint_service or self._sharepoint_service, capture)))
             plugin_registrations = registrations
 
         kernel = Kernel()

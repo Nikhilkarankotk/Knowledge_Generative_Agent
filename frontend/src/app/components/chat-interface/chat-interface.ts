@@ -2,10 +2,9 @@ import { Component, inject, ElementRef, ViewChild, AfterViewChecked, ChangeDetec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Api } from '../../services/api/api';
-import { AttachedDocuments, AttachedDocument } from '../attached-documents/attached-documents';
 import { marked } from 'marked';
 
-interface Message {
+export interface Message {
   id?: number;
   content: string;
   htmlContent?: string;
@@ -20,7 +19,7 @@ interface Message {
 
 @Component({
   selector: 'app-chat-interface',
-  imports: [CommonModule, FormsModule, AttachedDocuments],
+  imports: [CommonModule, FormsModule],
   templateUrl: './chat-interface.html',
   styleUrls: ['./chat-interface.css', './chat-copilot.css']
 })
@@ -35,7 +34,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
   isLoading = false;
   ingestError = '';
 
-  attachedDocuments: AttachedDocument[] = [];
+  attachedDocuments: any[] = [];
   processingFiles: string[] = [];
   attachedCollapsed = false;
 
@@ -47,6 +46,12 @@ export class ChatInterface implements AfterViewChecked, OnInit {
   showCorrectionModal = false;
   activeCorrectionMessage: Message | null = null;
   correctionText = '';
+
+  // Export State (per-message response export + knowledge ZIP export)
+  exportingMessageId: number | null = null;
+  exportedMessageId: number | null = null;
+  knowledgeExporting = false;
+  knowledgeExported = false;
 
   @ViewChild('chatContainer') private chatContainer!: ElementRef;
   @ViewChild('fileInput') private fileInput!: ElementRef;
@@ -96,8 +101,6 @@ export class ChatInterface implements AfterViewChecked, OnInit {
             isTranslated: msg.isTranslated
           });
         }
-        // Collapsed once a conversation exists; expanded for fresh sessions so
-        // the user can confirm their attached documents before chatting.
         this.attachedCollapsed = this.messages.length > 0;
         this.isLoading = false;
         this.cdr.detectChanges();
@@ -168,19 +171,51 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     });
   }
 
-  prepareSummary() {
-    this.userInput = 'Summarize the key decisions, risks, and next steps from this conversation.';
+  // --- Export ---
+  exportMessage(msg: Message) {
+    const messageId = msg.id;
+    if (!messageId || this.exportingMessageId !== null) return;
+    this.exportingMessageId = messageId;
+    this.api.downloadResponseExport(messageId).subscribe({
+      next: (res) => {
+        this.exportingMessageId = null;
+        this.exportedMessageId = messageId;
+        this.saveBlobFromResponse(res, `response-${messageId}.txt`);
+      },
+      error: () => {
+        this.exportingMessageId = null;
+      }
+    });
   }
 
-  exportConversation() {
-    const transcript = this.messages.length
-      ? this.messages.map((message) => `${message.role === 'user' ? 'You' : 'Ask PNC'}: ${message.content}`).join('\n\n')
-      : 'Ask PNC conversation\n\nNo messages to export yet.';
-    const blob = new Blob([transcript], { type: 'text/plain;charset=utf-8' });
-    const downloadUrl = URL.createObjectURL(blob);
+  exportKnowledge() {
+    if (this.knowledgeExporting) return;
+    const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant' && m.id);
+    const messageId = lastAssistant?.id;
+    if (!messageId) return;
+    this.knowledgeExporting = true;
+    this.api.downloadKnowledgeExport(messageId).subscribe({
+      next: (res) => {
+        this.knowledgeExporting = false;
+        this.knowledgeExported = true;
+        this.saveBlobFromResponse(res, `knowledge-export-${messageId}.zip`);
+        setTimeout(() => (this.knowledgeExported = false), 3000);
+      },
+      error: () => {
+        this.knowledgeExporting = false;
+      }
+    });
+  }
+
+  private saveBlobFromResponse(res: any, fallbackName: string) {
+    const body = res.body as Blob | null;
+    if (!body) return;
+    const downloadUrl = URL.createObjectURL(body);
     const link = document.createElement('a');
     link.href = downloadUrl;
-    link.download = 'ask-pnc-conversation.txt';
+    const disposition = (res.headers?.get('Content-Disposition') as string | undefined) || '';
+    const match = disposition.match(/filename="?([^";]+)"?/);
+    link.download = match ? match[1] : fallbackName;
     link.click();
     URL.revokeObjectURL(downloadUrl);
   }
@@ -207,13 +242,11 @@ export class ChatInterface implements AfterViewChecked, OnInit {
 
   saveEdit(msg: Message) {
     if (!this.editedContent.trim()) return;
-    
-    // In a real app, you might want to update the backend here.
-    // For now, we'll update the local message and re-send it.
+
     const newText = this.editedContent.trim();
     msg.content = newText;
     msg.htmlContent = undefined; // Clear HTML so it re-renders if needed
-    
+
     this.editingMessageId = null;
     this.userInput = newText;
     this.sendMessage(); // Resend the edited prompt
@@ -324,6 +357,8 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     this.processingFiles = [];
     this.ingestError = '';
     this.attachedCollapsed = false;
+    this.exportedMessageId = null;
+    this.knowledgeExported = false;
     const newId = 'session_' + Math.random().toString(36).substring(2, 15);
     this.api.setSessionId(newId);
     this.loadAttachedDocuments();

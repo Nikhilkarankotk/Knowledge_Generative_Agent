@@ -551,6 +551,28 @@
   background: rgba(59, 130, 246, 0.1);
 }
 
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-btn .mini-spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
+.copilot-tools button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.copilot-tools button .mini-spinner {
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+}
+
 .lang-badge {
   display: inline-flex;
   align-items: center;

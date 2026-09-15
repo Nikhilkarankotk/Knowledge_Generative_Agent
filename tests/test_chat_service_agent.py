@@ -8,6 +8,8 @@ augmented-prompt path.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from semantic_kernel.contents import AuthorRole
 
 from app.core.config import Settings
@@ -85,6 +87,50 @@ def test_agent_path_persists_answer_and_skips_legacy_call(db_session) -> None:
     context = service._memory_service.get_context("s1")
     assert context[0]["user"] == "hello"
     assert context[0]["assistant"] == "Agent answer"
+
+
+def test_agent_confluence_retrieval_persists_export_context(db_session) -> None:
+    """The agent path must persist the captured Confluence source (including the
+    nested-page parent) into the export context, surviving end-to-end."""
+    from app.export.formats import ScenarioType
+    from app.repositories import ExportContextRepository
+
+    class StubConfluence:
+        enabled = True
+
+        def search(self, query, limit=None, space_key=None):
+            return (
+                "[Source: Confluence: API Documentation (space: PAY)]\n"
+                "Page id: DOC1\n"
+                "URL: https://wiki.example.com/spaces/PAY/pages/DOC1\n"
+                "Parent: Payments Application\n"
+                "Excerpt: REST endpoint reference for the Payments APIs."
+            )
+
+    factory, _ = make_factory(
+        [("Confluence", "search_pages", {"query": "Payments application API documentation"})]
+    )
+    mistral = MistralApiService(FakeLLM())
+    service = ChatService(
+        chat_repo=ChatMessageRepository(db_session),
+        mistral_service=mistral,
+        memory_service=ConversationMemoryService(max_history=10),
+        translation_service=TranslationService(mistral),
+        rag_service=RecordingRag(),
+        semantic_kernel_factory=factory,
+        confluence_service=StubConfluence(),
+        export_repo=ExportContextRepository(db_session),
+        settings=SimpleNamespace(export_context_ttl_days=30),
+    )
+
+    reply = service.process_user_message("s5", "Where is the API documentation?")
+
+    items = ExportContextRepository(db_session).find_items_by_chat_message_id(reply.id)
+    assert len(items) == 1
+    assert items[0].source_type == "CONFLUENCE"
+    assert items[0].source_id == "DOC1"
+    assert items[0].export_strategy == ScenarioType.GENERATED_DOCUMENT.value
+    assert items[0].meta == {"space": "PAY", "parent": "Payments Application"}
 
 
 def test_agent_history_is_rebuilt_from_db_each_turn(db_session) -> None:

@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
 @Injectable({
@@ -107,6 +107,29 @@ export class Api {
     return this.http.post(`${this.backendUrl}/rag/query`, query, {
       headers: this.getChatHeaders(false),
       responseType: 'text' as 'json'
+    });
+  }
+
+  // --- Export API ---
+  getKnowledgeExportMetadata(chatMessageId: number): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/knowledge-export/${chatMessageId}`, {
+      headers: this.getChatHeaders(false)
+    });
+  }
+
+  downloadResponseExport(chatMessageId: number): Observable<HttpResponse<Blob>> {
+    return this.http.post(`${this.backendUrl}/export/${chatMessageId}`, {}, {
+      headers: this.getChatHeaders(false),
+      responseType: 'blob',
+      observe: 'response'
+    });
+  }
+
+  downloadKnowledgeExport(chatMessageId: number, hint?: string): Observable<HttpResponse<Blob>> {
+    return this.http.post(`${this.backendUrl}/knowledge-export/${chatMessageId}`, { hint }, {
+      headers: this.getChatHeaders(false),
+      responseType: 'blob',
+      observe: 'response'
     });
   }
 }

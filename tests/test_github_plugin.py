@@ -227,3 +227,50 @@ def test_function_surface_is_fixed_and_parameterized() -> None:
     # No parameterless "search repositories" tool exists that could bypass the
     # allowlist; conversation history cannot add or enable additional tools either.
     assert exposed == names
+
+
+# ---- capture integration tests ----
+
+
+def test_get_readme_records_repository_in_capture() -> None:
+    from app.export.capture import RetrievalCapture
+
+    stub = StubGitHub()
+    capture = RetrievalCapture()
+    plugin = GitHubPlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    plugin.get_readme("acme/payments")
+
+    assert len(capture.items) == 1
+    item = capture.items[0]
+    assert item.source_type == "GITHUB"
+    assert item.source_id == "acme/payments"
+
+
+def test_list_repository_contents_records_path_in_capture() -> None:
+    from app.export.capture import RetrievalCapture
+
+    stub = StubGitHub()
+    capture = RetrievalCapture()
+    plugin = GitHubPlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    plugin.list_repository_contents("acme/payments", path="src")
+
+    assert len(capture.items) == 1
+    item = capture.items[0]
+    assert item.source_type == "GITHUB"
+    assert item.source_id == "acme/payments"
+    assert item.metadata.get("path") == "src"
+
+
+def test_list_repository_contents_root_captures_no_path_metadata() -> None:
+    from app.export.capture import RetrievalCapture
+
+    stub = StubGitHub()
+    capture = RetrievalCapture()
+    plugin = GitHubPlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    plugin.list_repository_contents("acme/payments")
+
+    assert len(capture.items) == 1
+    assert "path" not in capture.items[0].metadata

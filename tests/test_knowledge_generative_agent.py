@@ -371,6 +371,49 @@ def test_routing_api_authentication_question_invokes_confluence() -> None:
     assert confluence.searched == ["Payments API authentication"]
 
 
+def test_routing_nested_documentation_question_includes_application_in_query() -> None:
+    confluence = StubConfluence()
+    confluence._search_output = (
+        "[Source: Confluence: API Documentation (space: PAY)]\n"
+        "Page id: DOC1\n"
+        "URL: https://wiki.example.com/spaces/PAY/pages/DOC1\n"
+        "Parent: Payments Application\n"
+        "Excerpt: REST endpoint reference for the Payments APIs."
+    )
+    factory, _ = make_factory(
+        [
+            (
+                "Confluence",
+                "search_pages",
+                {"query": "Payments application API documentation"},
+            )
+        ]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        confluence=confluence,
+        user_message="Where is the API documentation for the Payments Application?",
+    )
+
+    assert confluence.searched == ["Payments application API documentation"]
+    assert "[Source: Confluence: API Documentation" in answer
+    assert "Parent: Payments Application" in answer
+
+
+def test_system_instructions_include_application_in_nested_page_queries() -> None:
+    assert "Payments application API documentation" in SYSTEM_INSTRUCTIONS
+    assert "let search_pages resolve the page hierarchy" in SYSTEM_INSTRUCTIONS
+    assert "nested under an application's own page" in SYSTEM_INSTRUCTIONS
+
+
+def test_system_instructions_forbid_generic_fallback_when_sources_empty() -> None:
+    assert "Do not substitute a generic industry" in SYSTEM_INSTRUCTIONS
+    assert "say explicitly that no matching information could be retrieved" in SYSTEM_INSTRUCTIONS
+    assert "do not claim a page or document does not exist" in SYSTEM_INSTRUCTIONS
+
+
 def test_routing_uploaded_pdf_question_invokes_knowledge() -> None:
     rag = RecordingRag(context="[Source: report.pdf]\nreport content")
     factory, _ = make_factory(

@@ -300,6 +300,84 @@ def test_list_repository_contents_with_path() -> None:
     assert captured[0].endswith("/repos/a/b/contents/src/services")
 
 
+def test_walk_repository_via_single_recursive_tree() -> None:
+    """The recursive git-trees endpoint replaces the per-directory contents walk."""
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.url.path)
+        if request.url.path == "/repos/a/b":
+            return httpx.Response(200, json={"default_branch": "main"})
+        assert request.url.path == "/repos/a/b/git/trees/main"
+        assert parse_qs(request.url.query.decode() or "").get("recursive") == ["1"]
+        return httpx.Response(
+            200,
+            json={
+                "sha": "x",
+                "truncated": False,
+                "tree": [
+                    {"path": "src", "type": "tree"},
+                    {"path": "src/app.py", "type": "blob"},
+                    {"path": "src/tests/test_x.py", "type": "blob"},
+                    {"path": "README.md", "type": "blob"},
+                ],
+            },
+        )
+
+    service = make_service(handler)
+    output = service.walk_repository("a/b")
+
+    assert output == [
+        {"path": "src", "type": "dir"},
+        {"path": "src/app.py", "type": "file"},
+        {"path": "src/tests/test_x.py", "type": "file"},
+        {"path": "README.md", "type": "file"},
+    ]
+    assert captured == ["/repos/a/b", "/repos/a/b/git/trees/main"]
+
+
+def test_walk_repository_falls_back_and_skips_noise_dirs() -> None:
+    """Truncated trees fall back to the contents walk without descending into noise."""
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.url.path)
+        if request.url.path == "/repos/a/b":
+            return httpx.Response(200, json={"default_branch": "main"})
+        if request.url.path.endswith("/git/trees/main"):
+            return httpx.Response(200, json={"sha": "x", "truncated": True, "tree": []})
+        if request.url.path == "/repos/a/b/contents":
+            return httpx.Response(
+                200,
+                json=[
+                    {"name": "target", "type": "dir", "path": "target"},
+                    {"name": "src", "type": "dir", "path": "src"},
+                ],
+            )
+        if request.url.path == "/repos/a/b/contents/src":
+            return httpx.Response(
+                200,
+                json=[
+                    {"name": "node_modules", "type": "dir", "path": "src/node_modules"},
+                    {"name": "app.py", "type": "file", "path": "src/app.py"},
+                ],
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    service = make_service(handler)
+    output = service.walk_repository("a/b", skip_dirs=("target", "node_modules"))
+
+    assert output == [
+        {"path": "target", "type": "dir"},
+        {"path": "src", "type": "dir"},
+        {"path": "src/node_modules", "type": "dir"},
+        {"path": "src/app.py", "type": "file"},
+    ]
+    # noise dirs recorded but never descended into
+    assert "/repos/a/b/contents/target" not in captured
+    assert "/repos/a/b/contents/src/node_modules" not in captured
+
+
 def test_get_file_content_decodes_and_capped() -> None:
     body = base64.b64encode(b"def charge():\n    pass").decode()
 

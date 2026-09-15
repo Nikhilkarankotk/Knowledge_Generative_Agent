@@ -52,6 +52,31 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 500
     rag_top_k: int = 5
 
+    # --- Export (source-aware, context-grounded export service) ---
+    # Depot limits for export output. The ExportService validates the proposed
+    # export (native files, generated documents, archives) against these.
+    export_max_files: int = 100
+    export_max_total_size_mb: int = 100
+    export_max_single_file_size_mb: int = 25
+    export_max_generated_report_size_mb: int = 10
+    export_max_github_source_size_mb: int = 25
+    # Contexts older than this (in days) can no longer be exported.
+    export_context_ttl_days: int = 30
+    # When true, ZIP/manifest exports also include a copy of the assistant's
+    # answer (export-summary.md). Optional per the export specification.
+    export_include_summary: bool = True
+    # When true, the ExportService may ask the LLM for a recommended export
+    # intent (format/type) that is then validated against the retrieved sources
+    # and the available exporters before it is executed. A validated
+    # deterministic proposal is always used as the fallback.
+    export_intent_recommendation_enabled: bool = True
+    export_intent_recommendation_timeout_seconds: float = 15.0
+    # When true, generated exports (GitHub reports and Confluence/SharePoint/upload
+    # documents) include an LLM-written narrative (functionality/architecture/tech
+    # stack for repositories; an elaborated overview for documents) that is grounded
+    # in the retrieved evidence. A deterministic evidence section always remains.
+    export_report_synthesis_enabled: bool = True
+
     # --- Conversation memory ---
     conversation_max_history: int = 10
 
@@ -75,6 +100,9 @@ class Settings(BaseSettings):
     confluence_limit: int = 5
     confluence_timeout_seconds: float = 15.0
     confluence_page_char_limit: int = 15000
+    # Whether Confluence searches also include drafts. Off by default: drafts are
+    # usually not the authoritative source an agent should answer from.
+    confluence_include_drafts: bool = False
 
     # --- GitHub (GitHubPlugin, Phase 2) ---
     # Disabled by default: plugins return "not configured" markers when off. The

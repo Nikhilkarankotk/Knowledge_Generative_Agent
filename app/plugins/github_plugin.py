@@ -16,6 +16,8 @@ import logging
 from semantic_kernel.functions import kernel_function
 
 from app.core.exceptions import GitHubApiError
+from app.export.capture import ExportItemDraft, RetrievalCapture, parse_github_code_search
+from app.export.formats import ScenarioType, SourceType
 from app.services.github_service import GitHubService
 
 # The @kernel_function decorator below runs signature introspection at class-definition
@@ -86,8 +88,13 @@ GET_ISSUE_DESCRIPTION = (
 class GitHubPlugin:
     """Read-only GitHub repository/code access limited to the configured allowlist."""
 
-    def __init__(self, github_service: GitHubService | None) -> None:
+    def __init__(
+        self,
+        github_service: GitHubService | None,
+        capture: RetrievalCapture | None = None,
+    ) -> None:
         self._service = github_service
+        self._capture = capture
 
     @kernel_function(
         description=LIST_ALLOWED_REPOSITORIES_DESCRIPTION,
@@ -117,6 +124,7 @@ class GitHubPlugin:
         logger.info("GitHub get_repository invoked: repo=%r", repo)
         try:
             result = self._service.get_repository(repo)  # type: ignore[union-attr]
+            _capture_repo(self._capture, repo, _strip_source_lines(result))
             logger.info("GitHub get_repository completed: repo=%r", repo)
             return result
         except GitHubApiError as exc:
@@ -134,6 +142,7 @@ class GitHubPlugin:
         logger.info("GitHub get_readme invoked: repo=%r", repo)
         try:
             result = self._service.get_readme(repo)  # type: ignore[union-attr]
+            _capture_repo(self._capture, repo, _strip_source_lines(result))
             logger.info("GitHub get_readme completed: repo=%r", repo)
             return result
         except GitHubApiError as exc:
@@ -154,6 +163,7 @@ class GitHubPlugin:
         logger.info("GitHub list_repository_contents invoked: repo=%r path=%r", repo, path)
         try:
             result = self._service.list_repository_contents(repo, path)  # type: ignore[union-attr]
+            _capture_repo(self._capture, repo, path=path or "")
             logger.info(
                 "GitHub list_repository_contents completed: repo=%r path=%r",
                 repo,
@@ -175,6 +185,7 @@ class GitHubPlugin:
         logger.info("GitHub get_file_content invoked: repo=%r path=%r", repo, path)
         try:
             result = self._service.get_file_content(repo, path)  # type: ignore[union-attr]
+            _capture_repo(self._capture, repo, path=path)
             logger.info("GitHub get_file_content completed: repo=%r path=%r", repo, path)
             return result
         except GitHubApiError as exc:
@@ -197,6 +208,7 @@ class GitHubPlugin:
         )
         try:
             result = self._service.search_code(repository, query, limit=limit)  # type: ignore[union-attr]
+            _capture_code_search(self._capture, result)
             logger.info(
                 "GitHub search_code completed: repository=%r %d results returned",
                 repository,
@@ -218,6 +230,7 @@ class GitHubPlugin:
         logger.info("GitHub get_issue invoked: repo=%r issue=%r", repo, issue_number)
         try:
             result = self._service.get_issue(repo, issue_number)  # type: ignore[union-attr]
+            _capture_repo(self._capture, repo, _strip_source_lines(result))
             logger.info("GitHub get_issue completed: repo=%r issue=%r", repo, issue_number)
             return result
         except GitHubApiError as exc:
@@ -230,6 +243,49 @@ class GitHubPlugin:
     @property
     def _enabled(self) -> bool:
         return self._service is not None and self._service.enabled
+
+
+def _capture_repo(
+    capture: RetrievalCapture | None,
+    repo: str,
+    content: str = "",
+    path: str | None = None,
+) -> None:
+    """Persist a repository used by the agent into the turn's export capture."""
+    if capture is None or not repo:
+        return
+    metadata: dict[str, str] = {}
+    if path:
+        metadata["path"] = path
+    draft = ExportItemDraft(
+        source_type=SourceType.GITHUB.value,
+        source_id=repo,
+        source_name=repo,
+        metadata=metadata,
+        export_strategy=ScenarioType.GENERATED_REPORT.value,
+    )
+    if content:
+        draft.merge_content(content[:_MAX_REPO_CAPTURE_CHARS])
+    capture.add(draft)
+
+
+def _capture_code_search(capture: RetrievalCapture | None, result: str) -> None:
+    """Persist the repositories surfaced by a code search into the export capture."""
+    if capture is None:
+        return
+    for found in parse_github_code_search(result):
+        repo = found.get("repo")
+        if repo:
+            _capture_repo(capture, repo)
+
+
+def _strip_source_lines(text: str) -> str:
+    return "\n".join(
+        line for line in (text or "").splitlines() if not line.startswith("[Source")
+    ).strip()
+
+
+_MAX_REPO_CAPTURE_CHARS = 20_000
 
 
 def _count_sources(text: str) -> int:

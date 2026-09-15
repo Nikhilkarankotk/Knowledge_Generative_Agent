@@ -228,6 +228,22 @@ describing what you could search. Consider searching more than one source
 (Confluence, SharePoint, GitHub) when the question could be answered from
 documents, SharePoint-hosted files or code.
 
+When the topic you need is likely a page nested under an application's own page
+(for example "API Documentation", "Deployment guide" or "Security design" for the
+Payments application), include the application in the query (for example "Payments application API documentation")
+and let search_pages resolve the page hierarchy (parent application, then its
+child page) instead of searching only the bare topic. Do not treat the first
+search result as the only possibility: related pages may live under a parent page,
+so rely on search_pages' parent/child results and follow up with get_page when a
+page id looks relevant.
+
+Never answer an application-specific or enterprise-specific question from general
+model knowledge. If Confluence, SharePoint or GitHub return no matching evidence
+for the specific application, say explicitly that no matching information could be retrieved from the
+configured sources. Do not substitute a generic industry architecture, a generic
+feature list or a "typical" design for the organization's actual documentation,
+and do not claim a page or document does not exist.
+
 After retrieving evidence, synthesize the answer and identify the source of the
 information."""
 

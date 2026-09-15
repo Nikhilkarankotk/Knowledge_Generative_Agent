@@ -17,6 +17,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.database import Database
+from app.export.export_service import ExportService
+from app.export.intent import IntentRecommender
+from app.export.sources import ExportLimits, ExportServices
 from app.llm import MistralClient
 from app.rag.document_parser import DocumentParser
 from app.rag.embedding_service import EmbeddingService
@@ -25,7 +28,9 @@ from app.rag.text_chunker import TextChunker
 from app.repositories import (
     ChatMessageRepository,
     DocumentChunkRepository,
+    DocumentFileRepository,
     DocumentRepository,
+    ExportContextRepository,
     FeedbackRepository,
 )
 from app.services.chat_service import ChatService
@@ -169,6 +174,14 @@ def get_feedback_repository(db: Session = Depends(get_db)) -> FeedbackRepository
     return FeedbackRepository(db)
 
 
+def get_export_context_repository(db: Session = Depends(get_db)) -> ExportContextRepository:
+    return ExportContextRepository(db)
+
+
+def get_document_file_repository(db: Session = Depends(get_db)) -> DocumentFileRepository:
+    return DocumentFileRepository(db)
+
+
 # --- Services --------------------------------------------------------------------------
 
 def get_mistral_api_service() -> MistralApiService:
@@ -190,6 +203,7 @@ def get_translation_service() -> TranslationService:
 def get_rag_service(
     chunk_repo: DocumentChunkRepository = Depends(get_document_chunk_repository),
     document_repo: DocumentRepository = Depends(get_document_repository),
+    document_file_repo: DocumentFileRepository = Depends(get_document_file_repository),
 ) -> RagService:
     return RagService.build(
         document_parser=_document_parser,
@@ -199,12 +213,15 @@ def get_rag_service(
         mistral_api_service=_mistral_api_service,
         settings=_settings,
         document_repo=document_repo,
+        document_file_repo=document_file_repo,
     )
 
 
 def get_chat_service(
     chat_repo: ChatMessageRepository = Depends(get_chat_repository),
     rag_service: RagService = Depends(get_rag_service),
+    export_repo: ExportContextRepository = Depends(get_export_context_repository),
+    document_file_repo: DocumentFileRepository = Depends(get_document_file_repository),
 ) -> ChatService:
     return ChatService(
         chat_repo=chat_repo,
@@ -215,4 +232,49 @@ def get_chat_service(
         semantic_kernel_factory=_semantic_kernel_factory,
         confluence_service=_confluence_service,
         max_history=_settings.conversation_max_history * 2,
+        export_repo=export_repo,
+        document_file_repo=document_file_repo,
+        settings=_settings,
+    )
+
+
+def get_export_service(
+    export_repo: ExportContextRepository = Depends(get_export_context_repository),
+    document_file_repo: DocumentFileRepository = Depends(get_document_file_repository),
+) -> ExportService:
+    services = ExportServices(
+        document_file_repo=document_file_repo,
+        confluence_service=_confluence_service,
+        github_service=_github_service,
+        sharepoint_service=_sharepoint_service,
+    )
+    recommender = IntentRecommender(
+        _mistral_api_service, enabled=_settings.export_intent_recommendation_enabled
+    )
+    from app.export.synthesis import ReportSynthesizer
+
+    # The narrative synthesis gets its own bounded LLM client: a longer read timeout
+    # and a single retry so writing the full report has room while a slow call cannot
+    # stall the export for minutes.
+    synthesis_client = MistralClient(
+        api_key=_settings.mistral_api_key,
+        base_url=_settings.mistral_base_url,
+        timeout_seconds=90.0,
+        retries=1,
+        chat_model=_settings.mistral_chat_model,
+        embedding_model=_settings.mistral_embedding_model,
+        ocr_model=_settings.mistral_ocr_model,
+    )
+    synthesizer = ReportSynthesizer(
+        MistralApiService(synthesis_client),
+        enabled=_settings.export_report_synthesis_enabled,
+        max_evidence_chars=50_000,
+    )
+    return ExportService(
+        export_repo=export_repo,
+        settings=_settings,
+        services=services,
+        recommender=recommender,
+        synthesizer=synthesizer,
+        limits=ExportLimits.from_settings(_settings),
     )

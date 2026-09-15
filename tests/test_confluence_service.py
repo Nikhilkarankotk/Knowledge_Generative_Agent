@@ -34,8 +34,8 @@ def test_search_formats_attributed_results() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/rest/api/content/search")
         params = parse_qs(request.url.query.decode())
-        assert params["expand"][0] == "version,space,excerpt"
-        assert 'text ~ "billing"' in params["cql"][0] and "type = page" in params["cql"][0]
+        assert params["expand"][0] == "version,space,excerpt,ancestors"
+        assert 'title ~ "billing"' in params["cql"][0] and "type = page" in params["cql"][0]
         return httpx.Response(
             200,
             json={"results": [_page_item("1000", "Billing 101")]},
@@ -48,6 +48,22 @@ def test_search_formats_attributed_results() -> None:
     assert "Page id: 1000" in output
     assert f"URL: {BASE_URL}/spaces/Payments/pages/1000" in output
     assert "Excerpt: Excerpt for Billing 101" in output
+
+
+def test_search_title_phrase_single_keyword_makes_single_call() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cql = parse_qs(request.url.query.decode())["cql"][0]
+        calls.append(cql)
+        return httpx.Response(200, json={"results": [_page_item("1000", "Billing 101")]})
+
+    service = make_service(handler, limit=5)
+    output = service.search("billing")
+
+    assert len(calls) == 1
+    assert 'title ~ "billing"' in calls[0]
+    assert "1000" in output
 
 
 def test_search_cql_escapes_quotes() -> None:
@@ -65,6 +81,187 @@ def test_search_cql_escapes_quotes() -> None:
 def test_search_empty_results_message() -> None:
     service = make_service(lambda request: httpx.Response(200, json={"results": []}))
     assert service.search("nothing matches") == "No Confluence pages found matching the query."
+
+
+def test_search_finds_nested_page_under_application_anchor() -> None:
+    """The bug: 'API Documentation' nested under 'Payments Application' was missed.
+
+    The progressive strategy resolves the anchor page ("Payments application") by
+    title, then searches its descendants with ``ancestor`` plus the topic, so the
+    nested page surfaces even though flat keyword-OR would bury it.
+    """
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cql = parse_qs(request.url.query.decode())["cql"][0]
+        calls.append(cql)
+        if 'title ~ "Payments application"' in cql:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        _page_item("PA1", "Payments Application", space="PAY")
+                    ]
+                },
+            )
+        if 'ancestor = "PA1"' in cql:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        _page_item("DOC1", "API Documentation", space="PAY")
+                    ]
+                },
+            )
+        if " OR " in cql:
+            return httpx.Response(200, json={"results": [_page_item("X1", "Noise page")]})
+        return httpx.Response(200, json={"results": []})
+
+    service = make_service(handler, limit=5)
+    output = service.search("Payments application API documentation")
+
+    assert any("ancestor" in cql for cql in calls), "must resolve the anchor's descendants"
+    assert "[Source: Confluence: API Documentation]" in output
+    assert "Page id: DOC1" in output
+
+
+def test_search_progressive_falls_back_to_keyword_or_when_no_hierarchy() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cql = parse_qs(request.url.query.decode())["cql"][0]
+        calls.append(cql)
+        if " OR " in cql:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        _page_item("1000", "Payments Architecture"),
+                        _page_item("2000", "Billing notes"),
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"results": []})
+
+    service = make_service(handler, limit=5)
+    output = service.search("payments architecture governance")
+
+    assert len(calls) >= 3, "title phrase, text phrase, then broaden"
+    assert any(" OR " in cql for cql in calls)
+    assert "[Source: Confluence: Payments Architecture]" in output
+    assert "[Source: Confluence: Billing notes]" in output
+
+
+def test_search_result_includes_direct_parent() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "DOC1",
+                        "type": "page",
+                        "title": "API Documentation",
+                        "space": {"name": "Payments"},
+                        "excerpt": "REST endpoints",
+                        "_links": {"webui": "/spaces/PAY/pages/DOC1"},
+                        "ancestors": [
+                            {"id": "ROOT", "title": "Home"},
+                            {"id": "PA1", "title": "Payments Application"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+    service = make_service(handler)
+    output = service.search("API documentation")
+
+    assert "[Source: Confluence: API Documentation]" in output
+    assert "Parent: Payments Application" in output
+
+
+def _page_item_with_ancestors(page_id: str, title: str, *, space: str = "Payments") -> dict:
+    return {
+        "id": page_id,
+        "type": "page",
+        "title": title,
+        "space": {"name": space},
+        "excerpt": f"Excerpt for {title}",
+        "_links": {"webui": f"/spaces/{space}/pages/{page_id}"},
+        "ancestors": [{"id": "PA1", "title": "Payments Application"}],
+    }
+
+
+def test_search_results_include_ancestors_in_expand() -> None:
+    expand_values: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(request.url.query.decode())
+        expand_values.append(params["expand"][0])
+        return httpx.Response(
+            200,
+            json={"results": [_page_item_with_ancestors("1000", "API Documentation")]},
+        )
+
+    service = make_service(handler)
+    service.search("API documentation")
+
+    assert all("ancestors" in expand for expand in expand_values)
+
+
+def test_search_does_not_include_drafts_by_default() -> None:
+    cqls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cqls.append(parse_qs(request.url.query.decode())["cql"][0])
+        return httpx.Response(200, json={"results": []})
+
+    service = make_service(handler)
+    service.search("payments architecture")
+
+    assert cqls and all("draft" not in cql for cql in cqls)
+
+
+def test_search_includes_drafts_when_enabled() -> None:
+    cqls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cqls.append(parse_qs(request.url.query.decode())["cql"][0])
+        return httpx.Response(200, json={"results": []})
+
+    service = make_service(handler, include_drafts=True)
+    service.search("payments architecture")
+
+    assert cqls and any("type = draft" in cql for cql in cqls)
+
+
+def test_debug_logs_query_cql_and_result_counts(caplog) -> None:
+    import logging
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    _page_item("2000", "Onboarding"),
+                    _page_item("1000", "Payments Architecture"),
+                ]
+            },
+        )
+
+    service = make_service(handler, limit=5)
+
+    with caplog.at_level(logging.DEBUG, logger="app.services.confluence_service"):
+        service.search("payments architecture")
+
+    debug_lines = " ".join(record.getMessage() for record in caplog.records)
+    assert "user_query='payments architecture'" in debug_lines
+    assert 'title ~ "payments architecture"' in debug_lines
+    assert "rest/api/content/search" in debug_lines
+    assert "status=200" in debug_lines
+    assert "titles=['Onboarding', 'Payments Architecture']" in debug_lines
+    assert "ids=['2000', '1000']" in debug_lines
 
 
 def test_search_scopes_cql_to_space() -> None:
@@ -102,10 +299,11 @@ def test_search_broadens_and_dedupes_on_low_recall() -> None:
     service = make_service(handler, limit=2)
     output = service.search("payments architecture")
 
-    assert len(calls) == 2, "expected a phrase search then a per-keyword broadening search"
-    assert "text ~" in calls[0] and " OR " not in calls[0]
-    assert 'text ~ "payments"' in calls[1] and 'text ~ "architecture"' in calls[1]
-    assert 'title ~ "payments"' in calls[1]
+    assert len(calls) == 4, "expected title phrase, text phrase, ancestor, then broadening"
+    assert 'title ~ "payments architecture"' in calls[0]
+    assert 'text ~ "payments architecture"' in calls[1]
+    assert 'title ~ "payments"' in calls[2]
+    assert "ancestor" in calls[2] or "ancestor" in calls[3]
     ranked = [line for line in output.splitlines() if line.startswith("[Source")]
     assert len(ranked) == 2, "second query must cap merged results at the limit"
     assert ranked[0].startswith("[Source: Confluence: Payments Architecture]")

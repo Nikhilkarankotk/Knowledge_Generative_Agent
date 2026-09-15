@@ -10,10 +10,13 @@ are still available.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from semantic_kernel.functions import kernel_function
 
 from app.core.exceptions import ConfluenceApiError
+from app.export.capture import ExportItemDraft, RetrievalCapture, parse_confluence_page, parse_confluence_search
+from app.export.formats import ScenarioType, SourceType
 from app.services.confluence_service import ConfluenceService
 
 # The @kernel_function decorator below runs signature introspection at class-definition
@@ -54,8 +57,13 @@ LIST_SPACES_DESCRIPTION = (
 class ConfluencePlugin:
     """Search and read Confluence pages through the ConfluenceService."""
 
-    def __init__(self, confluence_service: ConfluenceService | None) -> None:
+    def __init__(
+        self,
+        confluence_service: ConfluenceService | None,
+        capture: RetrievalCapture | None = None,
+    ) -> None:
         self._service = confluence_service
+        self._capture = capture
 
     @kernel_function(description=SEARCH_PAGES_DESCRIPTION, name="search_pages")
     def search_pages(
@@ -77,9 +85,13 @@ class ConfluencePlugin:
             result = self._service.search(  # type: ignore[union-attr]
                 query, limit=limit, space_key=space_key
             )
+            _capture_search_results(self._capture, result)
             logger.info(
                 "Confluence search_pages completed: %d results returned",
                 _count_sources(result),
+            )
+            logger.debug(
+                "Confluence search_pages tool result: %r", self._redact(result)
             )
             return result
         except ConfluenceApiError as exc:
@@ -117,6 +129,7 @@ class ConfluencePlugin:
         logger.info("Confluence get_page invoked: page_id=%r", page_id)
         try:
             result = self._service.get_page(page_id)  # type: ignore[union-attr]
+            _capture_page_result(self._capture, page_id, result)
             logger.info("Confluence get_page completed: page_id=%r", page_id)
             return result
         except ConfluenceApiError as exc:
@@ -129,6 +142,58 @@ class ConfluencePlugin:
     @property
     def _enabled(self) -> bool:
         return self._service is not None and self._service.enabled
+
+    @staticmethod
+    def _redact(text: str) -> str:
+        """Strip anything that looks like a bearer/basic token before logging."""
+        import re
+
+        return re.sub(r"(?i)(bearer\s+[A-Za-z0-9._~+/=-]+)", "<redacted>", text or "")
+
+
+def _capture_search_results(capture: RetrievalCapture | None, result: str) -> None:
+    """Persist each returned Confluence page into the turn's export capture."""
+    if capture is None:
+        return
+    for page in parse_confluence_search(result):
+        page_id = page.get("page_id")
+        if not page_id:
+            continue
+        metadata: dict[str, Any] = {}
+        if page.get("space"):
+            metadata["space"] = page["space"]
+        if page.get("parent"):
+            metadata["parent"] = page["parent"]
+        draft = ExportItemDraft(
+            source_type=SourceType.CONFLUENCE.value,
+            source_id=str(page_id),
+            source_name=str(page.get("title") or page_id),
+            source_url=page.get("url"),
+            metadata=metadata,
+            export_strategy=ScenarioType.GENERATED_DOCUMENT.value,
+        )
+        if page.get("excerpt"):
+            draft.merge_content(str(page["excerpt"]))
+        capture.add(draft)
+
+
+def _capture_page_result(capture: RetrievalCapture | None, page_id: str, result: str) -> None:
+    """Persist the retrieved Confluence page into the turn's export capture."""
+    if capture is None:
+        return
+    parsed = parse_confluence_page(result)
+    if not parsed:
+        return
+    draft = ExportItemDraft(
+        source_type=SourceType.CONFLUENCE.value,
+        source_id=page_id,
+        source_name=str(parsed.get("title") or page_id),
+        source_url=parsed.get("url"),
+        export_strategy=ScenarioType.GENERATED_DOCUMENT.value,
+    )
+    if parsed.get("content"):
+        draft.merge_content(str(parsed["content"]))
+    capture.add(draft)
 
 
 def _count_sources(text: str) -> int:

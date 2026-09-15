@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.dependencies import _client, _database
-from app.api.routes import chat, feedback, mistral, rag
+from app.api.routes import chat, export, feedback, knowledge_export, mistral, rag
 from app.core.config import get_settings
 from app.core.exceptions import ChatbotError, UnsupportedFileTypeError
 from app.core.logging import configure_logging, get_logger
@@ -49,6 +49,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Export-Filename"],
 )
 
 
@@ -68,6 +69,8 @@ app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(rag.router, prefix="/api/rag", tags=["rag"])
 app.include_router(mistral.router, prefix="/api/mistral", tags=["mistral"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
+app.include_router(export.router, prefix="/api/export", tags=["export"])
+app.include_router(knowledge_export.router, prefix="/api/knowledge-export", tags=["export"])
 
 
 @app.get("/health", tags=["health"])

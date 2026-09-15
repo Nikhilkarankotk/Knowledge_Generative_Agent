@@ -1110,6 +1110,80 @@ class SharePointService:
         )
         return summary + "\n\n" + "\n\n".join(blocks)
 
+    def download_document_bytes(
+        self,
+        document_id: str,
+        drive_id: str,
+        folder: str | None = None,
+    ) -> tuple[bytes, dict[str, Any]]:
+        """Download the *original bytes* of a SharePoint document (Phase 4 export).
+
+        Returns ``(content_bytes, metadata)`` where ``metadata`` carries
+        ``name``, ``web_url``, ``size``, ``last_modified`` and ``mime_type``. The
+        exact same access control as :meth:`get_document_content` is applied: in
+        scoped mode the document must resolve inside a configured knowledge-base
+        folder (or the explicit ``folder`` gate); in tenant-wide mode the read is
+        allowed by drive/item id. Any folder/allowlist rejection raises before a
+        byte is downloaded. Downloads larger than ``_MAX_DOWNLOAD_BYTES`` are
+        refused so an export can never force the tenant-wide service to fetch an
+        arbitrarily large blob.
+        """
+        drive_id = (drive_id or "").strip().strip("/")
+        document_id = (document_id or "").strip().strip("/")
+        if not drive_id or not document_id:
+            raise SharePointApiError(
+                "Please provide both a drive id and a document id."
+            )
+        item_path = (
+            f"drives/{_quote(drive_id, safe='')}"
+            f"/items/{_quote(document_id, safe='')}"
+        )
+        folder_gate: str | None = None
+        if not self._tenant_wide:
+            folder_gate = (
+                self._require_folder_allowed(folder, "download_document_bytes")
+                if folder
+                else None
+            )
+            self._resolved_site_id()
+            meta = self._request(
+                "GET",
+                item_path,
+                params={
+                    "$select": (
+                        "id,name,webUrl,size,lastModifiedDateTime,file,mimeType,parentReference"
+                    ),
+                },
+            )
+            self._require_item_in_allowed_folder(meta, folder_gate)
+        else:
+            meta = self._request(
+                "GET",
+                item_path,
+                params={
+                    "$select": (
+                        "id,name,webUrl,size,lastModifiedDateTime,file,mimeType,parentReference"
+                    ),
+                },
+            )
+        size = int(meta.get("size") or 0)
+        if size > _MAX_DOWNLOAD_BYTES:
+            raise SharePointApiError(
+                f"SharePoint document '{str(meta.get('name') or document_id)}' "
+                f"({size} bytes) exceeds the {_MAX_DOWNLOAD_BYTES:,} byte export "
+                "download limit."
+            )
+        content_bytes = self._fetch_content_bytes(drive_id, document_id)
+        if not content_bytes:
+            raise SharePointApiError("No content could be downloaded from this document.")
+        return content_bytes, {
+            "name": str(meta.get("name") or "document"),
+            "web_url": str(meta.get("webUrl") or ""),
+            "size": size,
+            "last_modified": str(meta.get("lastModifiedDateTime") or ""),
+            "mime_type": str(meta.get("mimeType") or ""),
+        }
+
 
 def _quote(value: str, safe: str = "/") -> str:
     return quote(value, safe=safe)

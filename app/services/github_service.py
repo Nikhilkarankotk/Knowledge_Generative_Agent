@@ -303,6 +303,97 @@ class GitHubService:
             + _cap(content.strip(), self._repo_char_limit)
         )
 
+    def get_file_content_text(self, repo: str, path: str, *, char_limit: int = 200_000) -> str:
+        """Decoded file text for the export analysis (allowlist-enforced).
+
+        Additive read-only helper used by the export service's repository
+        analysis. The repository is validated against the allowlist before any
+        request; the returned text is *not* attributed and may be up to
+        ``char_limit`` characters (truncated otherwise).
+        """
+        path = str(path or "").strip().strip("/")
+        if not path:
+            raise GitHubApiError("Please provide a repository and a file path.")
+        repo = self._require_allowed(repo, "get_file_content_text")
+        payload = self._raw_contents(repo, path)
+        content = _decode_base64(str((payload.get("content") or "") if isinstance(payload, dict) else ""))
+        return _cap(content.strip(), max(500, char_limit))
+
+    def walk_repository(
+        self,
+        repo: str,
+        *,
+        max_items: int = 200,
+        max_depth: int = 4,
+        skip_dirs: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        """Bounded listing of a repository's tree (export analysis).
+
+        Prefers the recursive ``git/trees`` endpoint (a single request); falls back
+        to a breadth-first ``contents`` walk when the tree is truncated or the API
+        is unavailable. Returns ``{path, type}`` dicts (``type`` in ``file``/``dir``).
+        During the fallback walk, directories named in ``skip_dirs`` are recorded but
+        never descended into.
+        """
+        repo = self._require_allowed(repo, "walk_repository")
+        skip = {str(name).lower() for name in skip_dirs if name}
+
+        entries = self._tree_recursive(repo)
+        if entries is not None:
+            results: list[dict[str, Any]] = []
+            for entry in entries:
+                if len(results) >= max_items:
+                    break
+                entry_type = "dir" if entry.get("type") == "tree" else "file"
+                results.append({"path": str(entry.get("path") or ""), "type": entry_type})
+            return results
+
+        tree_results: list[dict[str, Any]] = []
+        pending: list[tuple[str, int]] = [("", 0)]
+        while pending and len(tree_results) < max_items:
+            path, depth = pending.pop(0)
+            items = self._raw_contents(repo, path)
+            if isinstance(items, dict):
+                items = [items]
+            for item in items:
+                if len(tree_results) >= max_items:
+                    break
+                entry_path = str(item.get("path") or "")
+                entry_type = "dir" if item.get("type") == "dir" else "file"
+                tree_results.append({"path": entry_path, "type": entry_type})
+                if entry_type == "dir" and depth < max_depth:
+                    name = entry_path.rsplit("/", 1)[-1].lower()
+                    if name in skip:
+                        continue
+                    pending.append((entry_path, depth + 1))
+        return tree_results
+
+    def _tree_recursive(self, repo: str) -> list[dict[str, Any]] | None:
+        """All repository paths via the recursive git-trees endpoint (one request).
+
+        Returns ``None`` (never raises) on API errors or truncated trees so callers
+        can fall back to the contents walk.
+        """
+        try:
+            meta = self._get_json(f"repos/{_quote_repo(repo)}")
+            branch = str(meta.get("default_branch") or "master")
+            payload = self._get_payload(
+                f"repos/{_quote_repo(repo)}/git/trees/{quote(branch, safe='')}",
+                params={"recursive": "1"},
+            )
+        except Exception:  # noqa: BLE001 - caller falls back to the contents walk
+            return None
+        if not isinstance(payload, dict) or payload.get("truncated"):
+            return None
+        tree = payload.get("tree")
+        if not isinstance(tree, list):
+            return None
+        return [
+            entry
+            for entry in tree
+            if isinstance(entry, dict) and entry.get("type") in ("blob", "tree")
+        ]
+
     def search_code(self, repository: str, query: str, limit: int | None = None) -> str:
         """GitHub code search restricted to a single allowlisted repository.
 

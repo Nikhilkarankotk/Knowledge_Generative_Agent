@@ -24,7 +24,7 @@ from app.models import Document, DocumentChunk
 from app.rag.document_parser import DocumentParser
 from app.rag.embedding_service import EmbeddingService
 from app.rag.text_chunker import TextChunker
-from app.repositories import DocumentChunkRepository, DocumentRepository
+from app.repositories import DocumentChunkRepository, DocumentFileRepository, DocumentRepository
 from app.services.mistral_api_service import MistralApiService
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class RagService:
         chunk_size: int = 500,
         top_k: int = 5,
         document_repo: DocumentRepository | None = None,
+        document_file_repo: DocumentFileRepository | None = None,
     ) -> None:
         self._document_parser = document_parser
         self._text_chunker = text_chunker
@@ -50,6 +51,9 @@ class RagService:
         self._chunk_size = chunk_size
         self._top_k = top_k
         self._document_repo = document_repo
+        # Optional: persist the uploaded original bytes so the source-aware export
+        # can hand back the true native file (NATIVE_FILE) for uploaded documents.
+        self._document_file_repo = document_file_repo
 
     @classmethod
     def build(
@@ -61,6 +65,7 @@ class RagService:
         mistral_api_service: MistralApiService,
         settings: Settings,
         document_repo: DocumentRepository | None = None,
+        document_file_repo: DocumentFileRepository | None = None,
     ) -> RagService:
         return cls(
             document_parser=document_parser,
@@ -71,6 +76,7 @@ class RagService:
             chunk_size=settings.rag_chunk_size,
             top_k=settings.rag_top_k,
             document_repo=document_repo,
+            document_file_repo=document_file_repo,
         )
 
     def ingest_document(self, content: bytes, filename: str | None, session_id: str) -> None:
@@ -132,6 +138,13 @@ class RagService:
             status="indexed",
             uploaded_at=datetime.now(),
         )
+        if self._document_file_repo is not None:
+            self._document_file_repo.upsert(
+                session_id=session_id,
+                filename=filename,
+                content=content,
+                content_type=self._extension_label(filename),
+            )
 
     @staticmethod
     def _extension_label(filename: str) -> str:
@@ -147,6 +160,8 @@ class RagService:
         self._chunk_repo.delete_by_session_id(session_id)
         if self._document_repo is not None:
             self._document_repo.delete_by_session_id(session_id)
+        if self._document_file_repo is not None:
+            self._document_file_repo.delete_by_session_id(session_id)
 
     def delete_document(self, document_id: int, session_id: str) -> bool:
         if self._document_repo is None:
@@ -158,6 +173,10 @@ class RagService:
             self._chunk_repo.delete_by_session_and_source_filename(
                 session_id, document.filename
             )
+            if self._document_file_repo is not None:
+                self._document_file_repo.delete_by_session_and_filename(
+                    session_id, document.filename
+                )
         else:
             # Pre-migration document row without a filename: clear only its (legacy)
             # NULL-source chunks, never the whole session's knowledge base.
