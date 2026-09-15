@@ -28,8 +28,13 @@ export class App {
   ];
   readonly searches = ['Treasury management', 'Client onboarding', 'Risk appetite', 'Cybersecurity controls'];
   readonly experts = [
-    { initials: 'JS', name: 'John Smith', specialty: 'Payments Platform' },
-    { initials: 'SJ', name: 'Sarah Johnson', specialty: 'Fraud & Risk' },
-    { initials: 'MP', name: 'Mike Patel', specialty: 'Core Systems' },
+    { initials: 'JS', name: 'John Smith', specialty: 'Payments Platform', owner: 'A. Rivera', editor: 'S. Chen', editedAt: '2h ago' },
+    { initials: 'SJ', name: 'Sarah Johnson', specialty: 'Fraud & Risk', owner: 'D. Okafor', editor: 'L. Petrov', editedAt: '1d ago' },
+    { initials: 'MP', name: 'Mike Patel', specialty: 'Core Systems', owner: 'N. Alvarez', editor: 'J. Kim', editedAt: 'Sep 12' },
   ];
+  readonly documentContext = {
+    owner: 'A. Rivera',
+    updatedBy: 'S. Chen',
+    updatedAt: 'Today, 2h ago',
+  };
 }

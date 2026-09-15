@@ -36,8 +36,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Portfolio Chatbot",
-    description="Python migration of the Java Portfolio Chatbot (hybrid RAG assistant).",
+    title="Knowledge Generative Agent",
+    description="Python FastAPI Knowledege Generative Agent (hybrid RAG assistant).",
     version="0.1.0",
     lifespan=lifespan,
 )
