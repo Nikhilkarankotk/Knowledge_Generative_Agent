@@ -181,9 +181,11 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         this.exportingMessageId = null;
         this.exportedMessageId = messageId;
         this.saveBlobFromResponse(res, `response-${messageId}.txt`);
+        this.cdr.detectChanges();
       },
       error: () => {
         this.exportingMessageId = null;
+        this.cdr.detectChanges();
       }
     });
   }
@@ -199,10 +201,12 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         this.knowledgeExporting = false;
         this.knowledgeExported = true;
         this.saveBlobFromResponse(res, `knowledge-export-${messageId}.zip`);
+        this.cdr.detectChanges();
         setTimeout(() => (this.knowledgeExported = false), 3000);
       },
       error: () => {
         this.knowledgeExporting = false;
+        this.cdr.detectChanges();
       }
     });
   }
@@ -216,8 +220,10 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     const disposition = (res.headers?.get('Content-Disposition') as string | undefined) || '';
     const match = disposition.match(/filename="?([^";]+)"?/);
     link.download = match ? match[1] : fallbackName;
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(downloadUrl);
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 10000);
   }
 
   // --- Action Methods ---

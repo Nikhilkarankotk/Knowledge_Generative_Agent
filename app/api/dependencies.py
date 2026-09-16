@@ -20,7 +20,7 @@ from app.core.database import Database
 from app.export.export_service import ExportService
 from app.export.intent import IntentRecommender
 from app.export.sources import ExportLimits, ExportServices
-from app.llm import MistralClient
+from app.llm import MistralClient, build_report_llm_service
 from app.rag.document_parser import DocumentParser
 from app.rag.embedding_service import EmbeddingService
 from app.rag.rag_service import RagService
@@ -241,7 +241,7 @@ def get_chat_service(
 def get_export_service(
     export_repo: ExportContextRepository = Depends(get_export_context_repository),
     document_file_repo: DocumentFileRepository = Depends(get_document_file_repository),
-) -> ExportService:
+) -> Generator[ExportService, None, None]:
     services = ExportServices(
         document_file_repo=document_file_repo,
         confluence_service=_confluence_service,
@@ -253,24 +253,17 @@ def get_export_service(
     )
     from app.export.synthesis import ReportSynthesizer
 
-    # The narrative synthesis gets its own bounded LLM client: a longer read timeout
-    # and a single retry so writing the full report has room while a slow call cannot
-    # stall the export for minutes.
-    synthesis_client = MistralClient(
-        api_key=_settings.mistral_api_key,
-        base_url=_settings.mistral_base_url,
-        timeout_seconds=90.0,
-        retries=1,
-        chat_model=_settings.mistral_chat_model,
-        embedding_model=_settings.mistral_embedding_model,
-        ocr_model=_settings.mistral_ocr_model,
-    )
+    # The narrative synthesis gets its own bounded LLM client so writing the full
+    # report has room while a slow call cannot stall the export for minutes.
+    # GITHUB_LLM_PROVIDER=openrouter routes this through OpenRouter (separate LLM
+    # for the GitHub report); otherwise the default Mistral synthesis client is used.
+    synthesis_service = build_report_llm_service(_settings)
     synthesizer = ReportSynthesizer(
-        MistralApiService(synthesis_client),
+        synthesis_service,
         enabled=_settings.export_report_synthesis_enabled,
-        max_evidence_chars=50_000,
+        max_evidence_chars=_settings.github_analysis_max_context_chars,
     )
-    return ExportService(
+    export_service = ExportService(
         export_repo=export_repo,
         settings=_settings,
         services=services,
@@ -278,3 +271,11 @@ def get_export_service(
         synthesizer=synthesizer,
         limits=ExportLimits.from_settings(_settings),
     )
+    try:
+        yield export_service
+    finally:
+        # The synthesis backend owns a dedicated per-request HTTP client; close it
+        # so idle connections do not accumulate (OpenRouter or Mistral).
+        close = getattr(synthesis_service, "close", None)
+        if callable(close):
+            close()

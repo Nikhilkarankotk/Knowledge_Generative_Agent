@@ -12,6 +12,7 @@ from app.plugins.github_plugin import (
     GET_REPOSITORY_DESCRIPTION,
     LIST_ALLOWED_REPOSITORIES_DESCRIPTION,
     LIST_REPOSITORY_CONTENTS_DESCRIPTION,
+    RETRIEVE_REPOSITORY_CONTENTS_DESCRIPTION,
     SEARCH_CODE_DESCRIPTION,
     GitHubPlugin,
 )
@@ -43,6 +44,12 @@ class StubGitHub:
     def get_file_content(self, repo: str, path: str) -> str:
         self.calls.append(("get_file_content", (repo, path)))
         return "[Source: GitHub: a/b:pay.py]"
+
+    def retrieve_repository_contents(
+        self, repo: str, *, max_items: int = 60, max_chars: int = 25_000
+    ) -> str:
+        self.calls.append(("retrieve_repository_contents", (repo, max_items, max_chars)))
+        return f"[Source: GitHub: {repo}]\n### README.md\n..."
 
     def search_code(self, repository: str, query: str, limit: int | None = None) -> str:
         self.calls.append(("search_code", (repository, query, limit)))
@@ -113,6 +120,25 @@ def test_get_file_content_forwards_path() -> None:
     assert stub.calls == [("get_file_content", ("acme/payments", "src/pay.py"))]
 
 
+def test_retrieve_repository_contents_forwards_with_defaults() -> None:
+    stub = StubGitHub()
+    plugin = GitHubPlugin(stub)  # type: ignore[arg-type]
+
+    result = plugin.retrieve_repository_contents("acme/payments")
+
+    assert "### README.md" in result
+    assert stub.calls == [("retrieve_repository_contents", ("acme/payments", 60, 25_000))]
+
+
+def test_retrieve_repository_contents_honours_explicit_caps() -> None:
+    stub = StubGitHub()
+    plugin = GitHubPlugin(stub)  # type: ignore[arg-type]
+
+    plugin.retrieve_repository_contents("a/b", max_items=10, max_chars=5_000)
+
+    assert stub.calls == [("retrieve_repository_contents", ("a/b", 10, 5_000))]
+
+
 def test_search_code_forwards_repository_and_query() -> None:
     stub = StubGitHub()
     plugin = GitHubPlugin(stub)  # type: ignore[arg-type]
@@ -140,6 +166,7 @@ def test_disabled_github_returns_marker() -> None:
 
     plugin = GitHubPlugin(DisabledStub())  # type: ignore[arg-type]
     assert "not configured" in plugin.list_allowed_repositories()
+    assert "not configured" in plugin.retrieve_repository_contents("acme/payments")
     assert "not configured" in plugin.get_readme("a/b")
     assert "not configured" in plugin.search_code("a/b", "x")
     assert "not configured" in plugin.get_issue("a/b", 1)
@@ -178,6 +205,7 @@ def test_other_descriptions_mention_allowlist_and_followup_flow() -> None:
         GET_README_DESCRIPTION,
         LIST_REPOSITORY_CONTENTS_DESCRIPTION,
         GET_FILE_CONTENT_DESCRIPTION,
+        RETRIEVE_REPOSITORY_CONTENTS_DESCRIPTION,
         GET_ISSUE_DESCRIPTION,
     ):
         assert "configured for this knowledge generative agent" in description.lower()
@@ -186,6 +214,8 @@ def test_other_descriptions_mention_allowlist_and_followup_flow() -> None:
     assert "path" in GET_FILE_CONTENT_DESCRIPTION.lower()
     assert "read-only" in GET_ISSUE_DESCRIPTION.lower()
     assert "repository" in GET_REPOSITORY_DESCRIPTION.lower()
+    assert "file contents" in RETRIEVE_REPOSITORY_CONTENTS_DESCRIPTION.lower()
+    assert "retrieve_repository_contents" in LIST_ALLOWED_REPOSITORIES_DESCRIPTION.lower()
 
 
 def test_search_logs_invocation_and_result_count(caplog) -> None:
@@ -216,6 +246,7 @@ def test_function_surface_is_fixed_and_parameterized() -> None:
         "get_readme",
         "list_repository_contents",
         "get_file_content",
+        "retrieve_repository_contents",
         "search_code",
         "get_issue",
     }

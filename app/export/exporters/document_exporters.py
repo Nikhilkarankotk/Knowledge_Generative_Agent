@@ -303,6 +303,11 @@ class PdfExporter(Exporter):
     format_name = "pdf"
 
     def render(self, payload: ExportPayload) -> bytes:
+        architecture = getattr(payload, "architecture", None)
+        if architecture is not None:
+            from app.export.architecture_pdf import render_architecture_document
+
+            return render_architecture_document(architecture, repo_url=payload.source_url)
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import getSampleStyleSheet

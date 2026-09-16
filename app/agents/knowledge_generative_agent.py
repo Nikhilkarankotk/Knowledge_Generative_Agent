@@ -173,11 +173,15 @@ RETRIEVAL RULES
   space_key to the most relevant space.
 - For GitHub, call list_allowed_repositories first to see which repositories are
   configured for this agent, then get_readme or list_repository_contents to
-  understand the relevant repository, and get_file_content to read a specific
-  file once you know its path. Use search_code within a specific configured
-  repository (repository in owner/name form) to find where a symbol or feature is
-  implemented, and get_issue to read a specific issue. Never use any GitHub
-  function outside the repositories returned by list_allowed_repositories.
+  understand the relevant repository. When the user asks to retrieve or describe
+  the actual contents of a repository - its files, modules, tech stack or
+  configuration - call retrieve_repository_contents on the matching configured
+  repository to read a bounded sample of the real file contents in one call. Use
+  get_file_content to read a specific file once you know its path. Use search_code
+  within a specific configured repository (repository in owner/name form) to find
+  where a symbol or feature is implemented, and get_issue to read a specific
+  issue. Never use any GitHub function outside the repositories returned by
+  list_allowed_repositories.
 - Repository names passed to GitHub functions MUST be exactly the owner/name
   strings returned by list_allowed_repositories. Never construct a repository
   name from the question wording (for example do not turn an application name into

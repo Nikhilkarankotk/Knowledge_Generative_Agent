@@ -119,6 +119,29 @@ class Settings(BaseSettings):
     # access entirely (the agent answers "No GitHub repositories are configured").
     github_allowed_repositories: str = ""
 
+    # --- GitHub report analysis LLM (OpenRouter, Phase 2) ---
+    # Optional *separate* LLM provider used to write the GitHub repository analysis
+    # narrative (ReportSynthesizer). Leave GITHUB_LLM_PROVIDER empty or set it to
+    # "mistral" to keep using the Mistral synthesis client; set it to "openrouter"
+    # to route GitHub report synthesis through OpenRouter (an OpenAI-compatible
+    # endpoint). This only affects the generated report narrative - chat, RAG and
+    # embeddings always keep using the Mistral client above.
+    # OPENROUTER_* mirror the OpenAI-compatible OpenRouter API.
+    github_llm_provider: str = ""
+    github_llm_model: str = "openrouter/free"
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_timeout_seconds: float = 60.0
+    openrouter_retries: int = 2
+    # Bounds for the repository analysis that feeds the report narrative.
+    # Analysis is a deep, asynchronous operation: breadth is preferred over
+    # latency. This is a high safety ceiling; the byte budget governs how much
+    # is actually read.
+    github_analysis_max_files: int = 300
+    github_analysis_max_context_chars: int = 60000
+    github_analysis_max_tokens: int = 3000
+    github_analysis_temperature: float = 0.1
+
     # --- SharePoint Online (SharePointPlugin, Phase 3) ---
     # Disabled by default: plugins return "not configured" markers when off. The
     # integration is read-only and app-only (Microsoft Graph client credentials

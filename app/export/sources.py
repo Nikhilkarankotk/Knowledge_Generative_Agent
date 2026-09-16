@@ -26,9 +26,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.export.architecture import build_architecture_model
 from app.export.capture import parse_confluence_page
 from app.export.diagrams import LAYER_TITLES, ArchitectureLayer, render_architecture_text
 from app.export.formats import SourceType
@@ -260,6 +262,11 @@ class ExportLimits:
     max_single_file_bytes: int = 25 * 1024 * 1024
     max_github_source_bytes: int = 25 * 1024 * 1024
     max_generated_report_bytes: int = 10 * 1024 * 1024
+    # Safety ceiling on repository code files sampled for the GitHub analysis
+    # (configurable via GITHUB_ANALYSIS_MAX_FILES). Analysis is a deep operation,
+    # so this is deliberately generous; the byte budget is the real bound and
+    # breadth is preferred over latency.
+    github_analysis_max_files: int = 300
 
     @classmethod
     def from_settings(cls, settings: Any) -> ExportLimits:
@@ -270,6 +277,7 @@ class ExportLimits:
             max_single_file_bytes=int(settings.export_max_single_file_size_mb * mb),
             max_github_source_bytes=int(settings.export_max_github_source_size_mb * mb),
             max_generated_report_bytes=int(settings.export_max_generated_report_size_mb * mb),
+            github_analysis_max_files=settings.github_analysis_max_files,
         )
 
 
@@ -279,16 +287,39 @@ def resolve_sources(
     services: ExportServices | None = None,
     limits: ExportLimits | None = None,
 ) -> list[ResolvedSource]:
-    """Resolve every item into a :class:`ResolvedSource` (best-effort, quoted)."""
+    """Resolve every item into a :class:`ResolvedSource` (best-effort, quoted).
+
+    Items are resolved concurrently (thread-safe HTTP clients) because each item
+    usually triggers external fetches (GitHub analysis, Confluence/SharePoint
+    pages). The order of the returned list always matches the input order.
+    """
     services = services or ExportServices()
     limits = limits or ExportLimits()
-    resolved: list[ResolvedSource] = []
-    for item in items:
-        source = _resolve_item(item, session_id, services, limits)
-        if source is not None:
-            source.structure = detect_structure(source.content or "")
-            resolved.append(source)
-    return resolved
+    workers = max(1, min(len(items), _MAX_RESOLVE_WORKERS))
+    if workers == 1:
+        resolved_list: list[ResolvedSource] = []
+        for item in items:
+            source = _resolve_item(item, session_id, services, limits)
+            if source is not None:
+                source.structure = detect_structure(source.content or "")
+                resolved_list.append(source)
+        return resolved_list
+    resolved: list[ResolvedSource | None] = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_resolve_item, item, session_id, services, limits): index
+            for index, item in enumerate(items)
+        }
+        for future in futures:
+            source = future.result()
+            index = futures[future]
+            if source is not None:
+                source.structure = detect_structure(source.content or "")
+                resolved[index] = source
+    return [source for source in resolved if source is not None]
+
+
+_MAX_RESOLVE_WORKERS = 4
 
 
 def _resolve_item(
@@ -460,7 +491,12 @@ def _resolve_github(
     service = services.github_service
     if service is not None and service.enabled:
         try:
-            analysis, sampled = build_github_analysis(source_id, service, limits=limits)
+            analysis, sampled = build_github_analysis(
+                source_id,
+                service,
+                limits=limits,
+                max_code_files=limits.github_analysis_max_files,
+            )
             return ResolvedSource(
                 item=item,
                 source_type=SourceType.GITHUB.value,
@@ -569,9 +605,11 @@ def build_github_analysis(
     service: GitHubService,
     *,
     limits: ExportLimits | None = None,
-    max_code_files: int = 25,
+    max_code_files: int | None = None,
 ) -> tuple[ExportPayload, list[tuple[str, str]]]:
     limits = limits or ExportLimits()
+    if max_code_files is None:
+        max_code_files = limits.github_analysis_max_files
     payload = ExportPayload(
         title=f"{repo} - Repository Analysis",
         source_type=SourceType.GITHUB.value,
@@ -643,35 +681,37 @@ def build_github_analysis(
             continue
         if path.lower().endswith(_CODE_EXTENSIONS):
             code_files.append(path)
-        if len(code_files) >= max_code_files * 3:
-            break
 
-    # Read build files then code file samples (bounded total). Code files are
-    # read in priority order (entry points and core layer files first) so the
-    # analysis is built from where the application really starts.
-    for path in build_files[: max(max_code_files // 2, 5)]:
+    # Read build files then code files (bounded by the byte budget). Discovery is
+    # never truncated to a small sample: the analysis phase must see the whole
+    # repository before synthesis, so every non-noise/non-sensitive file is a
+    # candidate and only the byte budget (or the high safety ceiling) stops reads.
+    # Code files are read in priority order (entry points and core layer files
+    # first) so the analysis is built from where the application really starts.
+    # Reads are issued concurrently (each is an HTTP round-trip) and merged back
+    # in the established priority order while honouring the byte budget exactly.
+    candidate_build = [path for path in build_files if not _is_sensitive(path)]
+    candidate_code = [
+        path
+        for path in sorted(code_files, key=_code_read_key)[:max_code_files]
+        if not _is_sensitive(path)
+    ]
+    fetched: dict[str, str] = _fetch_github_files(
+        repo, service, candidate_build + candidate_code, limits.max_single_file_bytes
+    )
+    for path in candidate_build:
         if collected_bytes >= limits.max_github_source_bytes:
             break
-        if _is_sensitive(path):
-            continue
-        try:
-            text = service.get_file_content_text(repo, path, char_limit=limits.max_single_file_bytes)
-            if text and "\x00" not in text:
-                read_into(path, text)
-        except Exception:  # noqa: BLE001 - a missing file is not fatal
-            continue
+        text = fetched.get(path)
+        if text and "\x00" not in text:
+            read_into(path, text)
 
-    for path in sorted(code_files, key=_code_read_key)[:max_code_files]:
+    for path in candidate_code:
         if collected_bytes >= limits.max_github_source_bytes:
             break
-        if _is_sensitive(path):
-            continue
-        try:
-            text = service.get_file_content_text(repo, path, char_limit=limits.max_single_file_bytes)
-            if text and "\x00" not in text:
-                read_into(path, text)
-        except Exception:  # noqa: BLE001
-            continue
+        text = fetched.get(path)
+        if text and "\x00" not in text:
+            read_into(path, text)
 
     # ---- Build the report sections --------------------------------------
     payload.sections.append(
@@ -759,6 +799,13 @@ def build_github_analysis(
         )
     )
     payload.diagram_png = _architecture_png(layers)
+    payload.architecture = build_architecture_model(
+        repo,
+        files=collected,
+        readme=readme,
+        repo_meta=repo_meta,
+        tree=tree,
+    )
 
     deps = _extract_dependencies(repo, collected)
     payload.sections.append(
@@ -905,6 +952,47 @@ def build_github_analysis(
 
 def _first_chars(text: str, limit: int) -> str:
     return (text or "").strip()[:limit]
+
+
+def _fetch_github_files(
+    repo: str,
+    service: GitHubService,
+    paths: list[str],
+    char_limit: int,
+    *,
+    max_workers: int = 8,
+) -> dict[str, str]:
+    """Fetch many repository files concurrently (thread-safe HTTP client).
+
+    Returns ``{path: content}`` for files that read successfully; failures are
+    skipped (matching the previous best-effort per-file ``continue`` handling).
+    A single failing GitHub call never aborts the whole analysis.
+    """
+    results: dict[str, str] = {}
+    if not paths:
+        return results
+
+    def _read(path: str) -> tuple[str, str | None]:
+        try:
+            text = service.get_file_content_text(
+                repo, path, char_limit=char_limit
+            )
+            return path, text
+        except Exception:  # noqa: BLE001 - a missing file is not fatal
+            return path, None
+
+    workers = max(1, min(len(paths), max_workers))
+    if workers == 1:
+        for path in paths:
+            _, text = _read(path)
+            if text and "\x00" not in text:
+                results[path] = text
+        return results
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for path, text in executor.map(_read, paths):
+            if text and "\x00" not in text:
+                results[path] = text
+    return results
 
 
 def _is_sensitive(path: str) -> bool:

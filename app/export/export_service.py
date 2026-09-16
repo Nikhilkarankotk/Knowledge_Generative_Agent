@@ -237,7 +237,8 @@ class ExportService:
     def _exec_generated_report(self, intent: ExportIntent, resolved: list[ResolvedSource]) -> ExportArtifact:
         source = resolved[0]
         payload = source.analysis or self._captured_payload(source, intent.format)
-        self._prepend_synthesis(payload, kind="report")
+        if not (intent.format == "pdf" and payload.architecture is not None):
+            self._prepend_synthesis(payload, kind="report")
         data = self._render(intent.format, payload)
         _ensure_generated_size(intent.format, data, self._limits)
         filename = self._generated_filename(source, intent.format, mode="report")
@@ -336,7 +337,8 @@ class ExportService:
         repo_folder = f"{root}/{safe_filename(source.source_id)}"
         fmt = _pick_for_repo(exporter_registry.available_formats())
         payload = source.analysis or self._captured_payload(source, fmt)
-        self._prepend_synthesis(payload, kind="report")
+        if not (fmt == "pdf" and payload.architecture is not None):
+            self._prepend_synthesis(payload, kind="report")
         data = self._render(fmt, payload)
         entries.append(
             ZipEntry(

@@ -33,7 +33,8 @@ LIST_ALLOWED_REPOSITORIES_DESCRIPTION = (
     "Generative Agent (owner/name). Call this first when you need GitHub and are "
     "unsure which repositories are available. Only these repositories are readable; "
     "do not ask the user for other GitHub repositories. Follow up with "
-    "list_repository_contents or get_readme to explore a listed repository, and "
+    "retrieve_repository_contents when the user wants the actual contents of a "
+    "repository, list_repository_contents or get_readme to explore one, and "
     "search_code to find where a specific symbol is implemented inside it."
 )
 
@@ -64,6 +65,16 @@ GET_FILE_CONTENT_DESCRIPTION = (
     "by repository (owner/name) and path, e.g. 'src/services/payments.py'. Call this "
     "when you need the actual implementation of a class, function, configuration or "
     "dependency declaration. Only repositories configured for this Knowledge "
+    "Generative Agent are accessible."
+)
+
+RETRIEVE_REPOSITORY_CONTENTS_DESCRIPTION = (
+    "Sample and retrieve the actual file contents of a GitHub repository "
+    "(owner/name): a character-bounded set of its source, configuration and "
+    "README files, most relevant files first. Call this when the user asks to "
+    "retrieve, describe or analyse a repository's contents - its files, modules, "
+    "tech stack or configuration - in one call, instead of guessing paths and "
+    "reading files one at a time. Only repositories configured for this Knowledge "
     "Generative Agent are accessible."
 )
 
@@ -194,6 +205,38 @@ class GitHubPlugin:
         except Exception:  # noqa: BLE001
             logger.exception("Unexpected GitHub get_file_content failure")
             return f"Could not retrieve the file {path} from {repo}."
+
+    @kernel_function(
+        description=RETRIEVE_REPOSITORY_CONTENTS_DESCRIPTION,
+        name="retrieve_repository_contents",
+    )
+    def retrieve_repository_contents(
+        self, repo: str, max_items: int | None = None, max_chars: int | None = None
+    ) -> str:
+        if not self._enabled:
+            logger.info("GitHub retrieve_repository_contents not invoked: GitHub not configured")
+            return "GitHub access is not configured for this deployment."
+        logger.info(
+            "GitHub retrieve_repository_contents invoked: repo=%r max_items=%r max_chars=%r",
+            repo,
+            max_items,
+            max_chars,
+        )
+        try:
+            result = self._service.retrieve_repository_contents(  # type: ignore[union-attr]
+                repo,
+                max_items=max_items or 60,
+                max_chars=max_chars or 25_000,
+            )
+            _capture_repo(self._capture, repo, _strip_source_lines(result))
+            logger.info("GitHub retrieve_repository_contents completed: repo=%r", repo)
+            return result
+        except GitHubApiError as exc:
+            logger.warning("GitHub retrieve_repository_contents(%s) failed: %s", repo, exc)
+            return f"Could not retrieve the contents of {repo}: {exc}"
+        except Exception:  # noqa: BLE001
+            logger.exception("Unexpected GitHub retrieve_repository_contents failure")
+            return f"Could not retrieve the contents of {repo}."
 
     @kernel_function(description=SEARCH_CODE_DESCRIPTION, name="search_code")
     def search_code(self, repository: str, query: str, limit: int | None = None) -> str:

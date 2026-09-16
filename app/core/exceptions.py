@@ -34,6 +34,10 @@ class MistralApiError(ChatbotError):
     """Raised when the Mistral API request/response handling fails."""
 
 
+class OpenRouterApiError(ChatbotError):
+    """Raised when the OpenRouter API request/response handling fails."""
+
+
 class ConfluenceApiError(ChatbotError):
     """Raised when the Confluence API request/response handling fails."""
 

@@ -281,6 +281,7 @@ def test_plugins_registered_under_expected_names() -> None:
         "get_readme",
         "list_repository_contents",
         "get_file_content",
+        "retrieve_repository_contents",
         "search_code",
         "get_issue",
     }
@@ -533,6 +534,7 @@ def test_system_instructions_mention_github_as_first_class_source() -> None:
     assert "Do not claim that GitHub contains no relevant code" in SYSTEM_INSTRUCTIONS
     assert "[Source: GitHub: <owner/repo>:<path>]" in SYSTEM_INSTRUCTIONS
     assert "list_allowed_repositories first" in SYSTEM_INSTRUCTIONS
+    assert "retrieve_repository_contents" in SYSTEM_INSTRUCTIONS
     assert "GITHUB_ALLOWED_REPOSITORIES" in SYSTEM_INSTRUCTIONS
     assert "search_repositories" not in SYSTEM_INSTRUCTIONS
 

@@ -7,5 +7,7 @@ timeout and retry behaviour (30s timeout, up to 3 retries).
 """
 
 from app.llm.client import MistralClient
+from app.llm.factory import build_report_llm_service
+from app.llm.openrouter import OpenRouterClient
 
-__all__ = ["MistralClient"]
+__all__ = ["MistralClient", "OpenRouterClient", "build_report_llm_service"]

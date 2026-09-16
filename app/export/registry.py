@@ -15,8 +15,12 @@ and is always available.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.export.formats import ExportFormat
+
+if TYPE_CHECKING:
+    from app.export.architecture import ArchitectureModel
 
 
 @dataclass
@@ -36,6 +40,8 @@ class ExportPayload:
     # Structured rows for tabular exports (csv/xlsx); each row is a list of cells.
     rows: list[list[str]] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
+    # Evidence-driven architecture model backing the graphical GitHub PDF pages.
+    architecture: ArchitectureModel | None = None
 
 
 @dataclass
