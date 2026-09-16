@@ -17,6 +17,12 @@ import { ChatInterface } from './components/chat-interface/chat-interface';
   styleUrls: ['./app.css', './pnc-brand.css'],
 })
 export class App {
+  insightsOpen = false;
+
+  toggleInsights(): void {
+    this.insightsOpen = !this.insightsOpen;
+  }
+
   readonly alerts = [
     { title: 'Policy refresh required', detail: 'Information Security Policy expires in 12 days.', tone: 'warning' },
     { title: 'New source indexed', detail: 'Q3 Treasury Operating Plan is ready to ask.', tone: 'success' },
