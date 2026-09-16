@@ -1,4 +1,4 @@
-# ---- Application ----
+﻿# ---- Application ----
 APP_NAME=Users
 HOST=0.0.0.0
 PORT=8080
@@ -7,10 +7,10 @@ LOG_LEVEL=INFO
 # ---- Database (matches src/main/resources/application.yml) ----
 DB_DRIVER=postgresql
 DB_HOST=localhost
-DB_PORT=5433
+DB_PORT=5432
 DB_NAME=Knowledge_Gen_Agent
 DB_USER=postgres
-DB_PASSWORD=postgres
+DB_PASSWORD=postgressql
 # Optional full override (takes precedence over the individual DB_* variables):
 # DATABASE_URL=postgresql://postgres:postgres@localhost:5433/portfolio_chatbot
 # Set to true to echo SQL (mirrors spring.jpa.show-sql: true)
@@ -39,9 +39,9 @@ CORS_ORIGINS=["http://localhost:4200"]
 # Atlassian API token + email (HTTP Basic, matches curl -u email:token).
 # Base URL is the workspace prefix ABOVE /rest/api.
 CONFLUENCE_ENABLED=true
-CONFLUENCE_BASE_URL=https://samplehackathon.atlassian.net/wiki
-CONFLUENCE_API_TOKEN=ATATT3xFfGF0CVCxnQTtasbVDE9Ll7vfJNx6b9wLgkVCFazpMzvSGWRUmSIm8PM8wkDaxJv1TL2xCr2uRF3YpDdwJ-OU_URkS_aNHYVqJZEWHhE-NUZnj0UI-_lqVKDQ175Er4g1iC8XbU9dS5NDL3YcWX4-1kzmev3dwBE_uVwgvOKYjVvdxIw=FCAA1BA5
-CONFLUENCE_USERNAME=karankotnikhilkumar@gmail.com
+CONFLUENCE_BASE_URL=https://knowledgegenagent.atlassian.net/wiki/
+CONFLUENCE_API_TOKEN=ATATT3xFfGF01Rw6WjTWOdkcJGlxGntmHp2qDei_hocppxvN0wxKToEzE2U_QEjWVKkps8IDP5xNTioXAtM41l-uFLV5H65gRRrmEUuTts5ZWDnAdwfsR1WNYBiNPArxcPmbwlzW-FTXyEOnCpNmr4qIcCWYr-G_krkmOUn94cGyLvttqtz7Abw=1C3C0CD2
+CONFLUENCE_USERNAME=nikhilkarankot@knowledgegenagent.onmicrosoft.com
 CONFLUENCE_LIMIT=5
 CONFLUENCE_TIMEOUT_SECONDS=15
 CONFLUENCE_PAGE_CHAR_LIMIT=15000
@@ -53,17 +53,17 @@ SK_AGENT_TIMEOUT_SECONDS=120
 # ---- GitHub (GitHubPlugin, Phase 2) ----
 # Read-only integration using a fine-grained personal access token.
 GITHUB_ENABLED=true
-OPENROUTER_API_KEY=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
+OPENROUTER_API_KEY=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
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 GITHUB_LLM_PROVIDER=openrouter
-GITHUB_LLM_MODEL=openai/free
+GITHUB_LLM_MODEL= openrouter/free
 OPENROUTER_TIMEOUT_SECONDS=60
 OPENROUTER_RETRIES=2
 GITHUB_ANALYSIS_MAX_FILES=40
 GITHUB_ANALYSIS_MAX_CONTEXT_CHARS=60000
 GITHUB_ANALYSIS_MAX_TOKENS=3000
 GITHUB_ANALYSIS_TEMPERATURE=0.1
-GITHUB_TOKEN=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
+GITHUB_TOKEN=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
 GITHUB_BASE_URL=https://api.github.com/
 GITHUB_ALLOWED_REPOSITORIES=nikhilkarankotk/Knowledge_Generative_Agent, nikhilkarankotk/E-commerce_Application, nikhilkarankotk/DSA_Preparation, nikhilkarankotk/NikhilKarankotk, nikhilkarankotk/My_Portfolio, nikhilkarankotk/Portfolio-Chatbot-Assistant, nikhilkarankotk/Job_Portal_Web_Application, nikhilkarankotk/Java_Design_Patterns, nikhilkarankotk/Mapping_Startegies_Hibernate, nikhilkarankotk/Java_8_Features, nikhilkarankotk/n8n, nikhilkarankotk/vibe-link-design, nikhilkarankotk/Kafka_Setup, nikhilkarankotk/FAANG-Coding-Interview-Questions, nikhilkarankotk/OpenAI-Intgeration-with-Spring-Boot, nikhilkarankotk/Routing_Service, nikhilkarankotk/Microservices_udemy_2, nikhilkarankotk/Microservices_Udemy, nikhilkarankotk/MqlContainer-Docker-Compose, nikhilkarankotk/v2-spring-cloud-config, nikhilkarankotk/ms-config-main, nikhilkarankotk/Subscription_Manager, nikhilkarankotk/JwtImpl, nikhilkarankotk/express
 GITHUB_LIMIT=5
