@@ -32,3 +32,4 @@
 .history-item:hover .material-icons { transform: scale(1.2); }
 .no-history .material-icons { animation: copilot-float 3.5s ease-in-out infinite; }
 @media (max-width: 600px) { .copilot-welcome .suggestion-chips { grid-template-columns: 1fr; }.copilot-welcome h2 { font-size: 24px; } }
+@media (max-height: 800px) { .messages-area { padding: 16px 28px; } .copilot-welcome { padding: 26px 18px 18px; } .input-area { padding: 10px 24px 14px; } .copilot-tools { margin-bottom: 6px; } }
