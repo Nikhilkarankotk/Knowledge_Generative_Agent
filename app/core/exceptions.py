@@ -38,6 +38,14 @@ class OpenRouterApiError(ChatbotError):
     """Raised when the OpenRouter API request/response handling fails."""
 
 
+class AzureOpenAIApiError(ChatbotError):
+    """Raised when the Azure OpenAI API request/response handling fails."""
+
+
+class AnthropicFoundryApiError(ChatbotError):
+    """Raised when the Anthropic (Azure AI Foundry) API request/response fails."""
+
+
 class ConfluenceApiError(ChatbotError):
     """Raised when the Confluence API request/response handling fails."""
 

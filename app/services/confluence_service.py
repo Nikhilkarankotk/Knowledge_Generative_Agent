@@ -33,40 +33,238 @@ logger = logging.getLogger(__name__)
 
 
 class _TextFromHtml(HTMLParser):
-    """Extract readable text from Confluence's HTML ``body.view`` content."""
+    """Extract *structured* text from Confluence's HTML ``body.view`` content.
+
+    Instead of flattening the page to one blob of prose, this emits a lightweight
+    markdown representation so downstream exporters (DOCX/PDF) can rebuild the
+    document structure professionally:
+
+    * ``<h1>``..``<h6>``          -> ``#``..``######`` headings
+    * ``<table>``                -> pipe tables (``| a | b |`` + separator row)
+    * ``<pre>`` / block ``<code>`` -> fenced ```` ``` ```` blocks with the original
+      whitespace preserved (critical for ASCII architecture diagrams)
+    * ``<ul>`` / ``<ol>``         -> ``-`` / ``1.`` list items (nested lists indented)
+    * ``<b>``/``<strong>``        -> ``**bold**``
+    * ``<p>``/``<div>``/``<br>``   -> paragraph breaks
+    """
 
     _IGNORE_TAGS = {"script", "style"}
+    _HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+    _INLINE = {"a", "span", "em", "i", "u", "small", "sub", "sup", "mark", "font"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._pieces: list[str] = []
         self._skip_depth = 0
+        self._pre_depth = 0
+        self._table_depth = 0
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+        self._table_rows: list[list[str]] = []
+        self._list_stack: list[str] = []
+        self._ordinals: list[int] = []
+        self._bold_depth = 0
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def _emit(self, text: str) -> None:
+        if self._cell is not None:
+            self._cell.append(text)
+        else:
+            self._pieces.append(text)
+
+    # -- tags -----------------------------------------------------------------
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in self._IGNORE_TAGS:
             self._skip_depth += 1
-        if tag in {"p", "br", "div", "li", "h1", "h2", "h3", "tr"}:
-            self._pieces.append("\n")
+            return
+        if self._skip_depth:
+            return
+        if tag == "pre" or (tag == "code" and self._pre_depth == 0 and self._table_depth == 0
+                            and self._cell is None and not self._list_stack):
+            if self._pre_depth == 0:
+                self._pieces.append("\n```\n")
+            self._pre_depth += 1
+            return
+        if self._pre_depth:
+            return  # everything inside <pre> is verbatim
+        if tag == "table":
+            self._table_depth += 1
+            self._table_rows = []
+            return
+        if self._table_depth:
+            if tag == "tr":
+                self._row = []
+            elif tag in {"td", "th"}:
+                self._cell = []
+            elif tag == "br":
+                self._emit(" ")
+            return
+        if tag in self._HEADINGS:
+            self._pieces.append("\n\n" + "#" * self._HEADINGS[tag] + " ")
+            return
+        if tag == "ul":
+            self._list_stack.append("ul")
+            return
+        if tag == "ol":
+            self._list_stack.append("ol")
+            self._ordinals.append(0)
+            return
+        if tag == "li":
+            indent = "  " * max(len(self._list_stack) - 1, 0)
+            if self._list_stack and self._list_stack[-1] == "ol":
+                self._ordinals[-1] += 1
+                self._pieces.append(f"\n{indent}{self._ordinals[-1]}. ")
+            else:
+                self._pieces.append(f"\n{indent}- ")
+            return
+        if tag in {"b", "strong"}:
+            if self._bold_depth == 0:
+                self._emit("**")
+            self._bold_depth += 1
+            return
+        if tag in {"p", "div", "br", "section", "article", "blockquote", "hr"}:
+            self._pieces.append("\n\n" if tag != "br" else "\n")
+            return
+        if tag in self._INLINE:
+            self._emit(" ")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in self._IGNORE_TAGS and self._skip_depth:
-            self._skip_depth -= 1
+        if tag in self._IGNORE_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag in {"pre", "code"} and self._pre_depth:
+            self._pre_depth -= 1
+            if self._pre_depth == 0:
+                self._pieces.append("\n```\n")
+            return
+        if self._pre_depth:
+            return
+        if self._table_depth:
+            if tag in {"td", "th"} and self._cell is not None:
+                text = re.sub(r"\s+", " ", "".join(self._cell)).strip()
+                if self._row is not None:
+                    self._row.append(text)
+                self._cell = None
+            elif tag == "tr" and self._row is not None:
+                self._table_rows.append(self._row)
+                self._row = None
+            elif tag == "table":
+                self._table_depth -= 1
+                self._flush_table()
+            return
+        if tag in self._HEADINGS:
+            self._pieces.append("\n")
+            return
+        if tag in {"ul", "ol"} and self._list_stack:
+            popped = self._list_stack.pop()
+            if popped == "ol" and self._ordinals:
+                self._ordinals.pop()
+            if not self._list_stack:
+                self._pieces.append("\n")
+            return
+        if tag in {"b", "strong"} and self._bold_depth:
+            self._bold_depth -= 1
+            if self._bold_depth == 0:
+                self._emit("**")
+            return
+        if tag in {"p", "div", "section", "article", "blockquote"}:
+            self._pieces.append("\n")
+        elif tag in self._INLINE:
+            self._emit(" ")
 
     def handle_data(self, data: str) -> None:
-        if not self._skip_depth:
-            self._pieces.append(data)
+        if self._skip_depth:
+            return
+        if self._pre_depth:
+            self._pieces.append(data)  # verbatim (diagrams / code)
+            return
+        self._emit(data)
+
+    # -- helpers --------------------------------------------------------------
+    def _flush_table(self) -> None:
+        rows = [row for row in self._table_rows if any(cell for cell in row)]
+        self._table_rows = []
+        if not rows:
+            return
+        width = max(len(row) for row in rows)
+        lines: list[str] = []
+        for index, row in enumerate(rows):
+            padded = [cell.replace("|", "\\|") for cell in (row + [""] * width)[:width]]
+            lines.append("| " + " | ".join(padded) + " |")
+            if index == 0:
+                lines.append("| " + " | ".join(["---"] * width) + " |")
+        self._pieces.append("\n\n" + "\n".join(lines) + "\n\n")
 
     def text(self) -> str:
-        raw = " ".join(self._pieces)
-        raw = re.sub(r"[ \t]+", " ", raw)
-        raw = re.sub(r"\n\s*\n+", "\n", raw)
-        return raw.strip()
+        raw = "".join(self._pieces).replace("\xa0", " ")
+        out: list[str] = []
+        in_code = False
+        for line in raw.splitlines():
+            if line.strip() == "```":
+                in_code = not in_code
+                out.append("```")
+                continue
+            if in_code:
+                out.append(line.rstrip())
+                continue
+            line = re.sub(r"[ \t]+", " ", line).rstrip()
+            # "** text **" -> "**text**": trim whitespace INSIDE the bold markers
+            # only, then drop markers that ended up empty.
+            line = re.sub(r"\*\*\s+([^*]*?)\s*\*\*", r"**\1**", line)
+            line = re.sub(r"\*\*([^*]*?)\s+\*\*", r"**\1**", line)
+            line = line.replace("****", "")
+            line = _space_bold_markers(line)
+            # Inline element boundaries insert a guard space; remove it before
+            # punctuation so "control plane ." reads "control plane.".
+            line = re.sub(r"\s+([.,;:!?)\]])", r"\1", line)
+            line = re.sub(r"([(\[])\s+", r"\1", line)
+            stripped = line.strip()
+            # Decorative bullet glyphs -> markdown bullets.
+            line = re.sub(r"^(\s*)[\u25a0\u25aa\u25cf\u2022\u2023\u2043\u2219]\s*", r"\1- ", line)
+            # Drop empty structural shells (<h3></h3>, empty <li>).
+            if re.fullmatch(r"#{1,6}", stripped) or re.fullmatch(r"[-*+]|\d+[.)]", stripped):
+                continue
+            out.append(line)
+        text = "\n".join(out)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+def _space_bold_markers(line: str) -> str:
+    """Ensure a space separates words from ``**`` markers on the outside.
+
+    Inline HTML like ``Connect to <b>VPN</b>.`` loses the whitespace around the
+    tag during parsing and would become ``Connect to**VPN**.``. Walking the
+    markers in order (open, close, open, ...) restores ``Connect to **VPN**.``
+    while leaving punctuation right after a closing marker untouched.
+    """
+    parts = line.split("**")
+    if len(parts) < 3:
+        return line
+    out = parts[0]
+    for index in range(1, len(parts)):
+        opening = index % 2 == 1  # odd -> this ** opens a bold span
+        prev, curr = out, parts[index]
+        if opening:
+            if prev and not prev[-1].isspace() and prev[-1].isalnum():
+                out += " "
+            out += "**" + curr
+        else:
+            out += "**"
+            if curr and curr[0].isalnum():
+                out += " "
+            out += curr
+    return out
 
 
 def html_to_text(markup: str) -> str:
-    """Strip HTML tags and collapse whitespace into readable text."""
+    """Convert Confluence ``body.view`` HTML into structured markdown-ish text.
+
+    Headings, lists, tables, bold text and preformatted/ASCII-diagram blocks are
+    preserved so the exported DOCX/PDF can lay the page out professionally.
+    """
     parser = _TextFromHtml()
     parser.feed(markup or "")
     parser.close()

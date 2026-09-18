@@ -183,14 +183,36 @@ def run_turn(factory, user_message, *, rag=None, confluence=None, github=None, s
 # --- planner unit tests: per-source selection ----------------------------------
 
 
-def test_planner_selects_confluence_only() -> None:
+def test_planner_confluence_plan_also_searches_sharepoint() -> None:
+    """Confluence and SharePoint hold DIFFERENT documents (e.g. CI/CD pipeline
+    PDFs only exist in SharePoint), so a documentation plan that names only one
+    of them is widened to both - otherwise SharePoint evidence is silently missed."""
     planner = planning(["confluence"])
-    assert [s.type for s in planner.plan("Payments architecture?", ALL_SOURCES)] == ["confluence"]
+    selections = planner.plan("Payments architecture?", ALL_SOURCES)
+    assert [s.type for s in selections] == ["confluence", "sharepoint"]
+    assert "either Confluence or SharePoint" in selections[1].reason
 
 
-def test_planner_selects_sharepoint_only() -> None:
+def test_planner_sharepoint_plan_also_searches_confluence() -> None:
     planner = planning(["sharepoint"])
-    assert [s.type for s in planner.plan("Onboarding process?", ALL_SOURCES)] == ["sharepoint"]
+    assert [s.type for s in planner.plan("Onboarding process?", ALL_SOURCES)] == [
+        "sharepoint",
+        "confluence",
+    ]
+
+
+def test_planner_confluence_only_when_sharepoint_not_registered() -> None:
+    planner = planning(["confluence"])
+    available = [s for s in ALL_SOURCES if s != "sharepoint"]
+    assert [s.type for s in planner.plan("Payments architecture?", available)] == ["confluence"]
+
+
+def test_planner_pairing_leaves_non_documentation_plans_alone() -> None:
+    from app.sk.source_planner import SourceSelection, pair_documentation_sources
+
+    only_code = [SourceSelection("github", "x")]
+    assert pair_documentation_sources(only_code, ALL_SOURCES) == only_code
+    assert pair_documentation_sources([], ALL_SOURCES) == []
 
 
 def test_planner_selects_github_only() -> None:
@@ -205,9 +227,11 @@ def test_planner_selects_uploaded_documents_only() -> None:
 
 def test_planner_selects_confluence_and_github() -> None:
     planner = planning(["confluence", "github"])
+    # Confluence in the plan pulls in its documentation sibling, SharePoint.
     assert [s.type for s in planner.plan("Compare docs and code", ALL_SOURCES)] == [
         "confluence",
         "github",
+        "sharepoint",
     ]
 
 
@@ -221,9 +245,11 @@ def test_planner_selects_confluence_and_sharepoint() -> None:
 
 def test_planner_selects_github_and_sharepoint() -> None:
     planner = planning(["github", "sharepoint"])
+    # SharePoint in the plan pulls in its documentation sibling, Confluence.
     assert [s.type for s in planner.plan("Code and policy", ALL_SOURCES)] == [
         "github",
         "sharepoint",
+        "confluence",
     ]
 
 

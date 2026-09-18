@@ -190,12 +190,18 @@ def api_llm(fake_llm: FakeLLM) -> FakeLLM:
         "mistral_api_service": dependencies._mistral_api_service,
         "embedding_service": dependencies._embedding_service,
         "mistral_service": dependencies._mistral_service,
+        "rag_answer_service": dependencies._rag_answer_service,
     }
 
-    dependencies._mistral_api_service = MistralApiService(fake_llm)  # type: ignore[attr-defined]
+    fake_api_service = MistralApiService(fake_llm)
+    dependencies._mistral_api_service = fake_api_service  # type: ignore[attr-defined]
     dependencies._embedding_service = EmbeddingService(fake_llm)  # type: ignore[attr-defined]
     dependencies._mistral_service = MistralService(fake_llm)  # type: ignore[attr-defined]
+    # The RAG answer LLM may be a separate provider (e.g. Azure "luna"); in tests
+    # it is driven by the same fake LLM so responses are deterministic.
+    dependencies._rag_answer_service = fake_api_service  # type: ignore[attr-defined]
     yield fake_llm
     dependencies._mistral_api_service = originals["mistral_api_service"]
     dependencies._embedding_service = originals["embedding_service"]
     dependencies._mistral_service = originals["mistral_service"]
+    dependencies._rag_answer_service = originals["rag_answer_service"]

@@ -42,6 +42,7 @@ class RagService:
         top_k: int = 5,
         document_repo: DocumentRepository | None = None,
         document_file_repo: DocumentFileRepository | None = None,
+        answer_service: object | None = None,
     ) -> None:
         self._document_parser = document_parser
         self._text_chunker = text_chunker
@@ -54,6 +55,11 @@ class RagService:
         # Optional: persist the uploaded original bytes so the source-aware export
         # can hand back the true native file (NATIVE_FILE) for uploaded documents.
         self._document_file_repo = document_file_repo
+        # Optional: a *separate* LLM service used only for final RAG answer
+        # generation (e.g. an Azure OpenAI "luna" deployment). Embeddings and OCR
+        # always keep using ``mistral_api_service``. Falls back to Mistral when
+        # unset so behaviour is unchanged unless a provider is configured.
+        self._answer_service = answer_service or mistral_api_service
 
     @classmethod
     def build(
@@ -66,6 +72,7 @@ class RagService:
         settings: Settings,
         document_repo: DocumentRepository | None = None,
         document_file_repo: DocumentFileRepository | None = None,
+        answer_service: object | None = None,
     ) -> RagService:
         return cls(
             document_parser=document_parser,
@@ -77,6 +84,7 @@ class RagService:
             top_k=settings.rag_top_k,
             document_repo=document_repo,
             document_file_repo=document_file_repo,
+            answer_service=answer_service,
         )
 
     def ingest_document(self, content: bytes, filename: str | None, session_id: str) -> None:
@@ -239,4 +247,4 @@ class RagService:
             f"Context: {context}\n"
             f"Question: {user_query}\n"
         )
-        return self._mistral_api_service.generate_response(augmented_prompt)
+        return self._answer_service.generate_response(augmented_prompt)

@@ -164,6 +164,7 @@
         <span class="material-icons" *ngIf="knowledgeExported">done</span>
         Knowledge Export
       </button>
+      <span class="export-error" *ngIf="knowledgeExportError" role="alert">{{ knowledgeExportError }}</span>
     </div>
     <div class="input-container">
 

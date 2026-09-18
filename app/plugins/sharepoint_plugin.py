@@ -115,7 +115,7 @@ class SharePointPlugin:
         )
         try:
             result = self._service.list_files(limit=limit)  # type: ignore[union-attr]
-            _capture_sharepoint_results(self._capture, result)
+            _capture_sharepoint_results(self._capture, result, exportable=False)
             logger.info("SharePoint list_sharepoint_documents completed")
             return result
         except SharePointApiError as exc:
@@ -153,7 +153,7 @@ class SharePointPlugin:
                 query=query,
                 limit=limit,
             )
-            _capture_sharepoint_results(self._capture, result)
+            _capture_sharepoint_results(self._capture, result, exportable=False)
             logger.info(
                 "SharePoint search_sharepoint completed: %d results returned",
                 _count_sources(result),
@@ -191,7 +191,10 @@ class SharePointPlugin:
                 query=query,
                 limit=limit,
             )
-            _capture_sharepoint_results(self._capture, result)
+            # Every hit's content is returned to the model, but a hit is only a
+            # *candidate* for export: the end-of-turn promotion keeps just the
+            # documents the answer is actually about (see RetrievalCapture).
+            _capture_sharepoint_results(self._capture, result, exportable=False)
             logger.info(
                 "SharePoint search_sharepoint_content completed: %d sources returned",
                 _count_sources(result),
@@ -229,7 +232,8 @@ class SharePointPlugin:
                 document_id=document_id,
                 drive_id=drive_id,
             )
-            _capture_sharepoint_results(self._capture, result)
+            # The agent deliberately opened this document: it IS a source.
+            _capture_sharepoint_results(self._capture, result, exportable=True)
             logger.info("SharePoint get_sharepoint_document completed")
             return result
         except SharePointApiError as exc:
@@ -246,8 +250,16 @@ class SharePointPlugin:
         return self._service is not None and self._service.enabled
 
 
-def _capture_sharepoint_results(capture: RetrievalCapture | None, result: str) -> None:
-    """Persist each returned SharePoint document into the turn's export capture."""
+def _capture_sharepoint_results(
+    capture: RetrievalCapture | None, result: str, *, exportable: bool = True
+) -> None:
+    """Persist each returned SharePoint document into the turn's export capture.
+
+    ``exportable=False`` records the document as a *candidate* (found by a
+    search/listing); it becomes exportable only if the agent reads it with
+    ``get_sharepoint_document`` or the end-of-turn promotion finds the answer is
+    about it. This keeps unrelated search hits out of the export.
+    """
     if capture is None:
         return
     for item in parse_sharepoint_items(result):
@@ -280,6 +292,7 @@ def _capture_sharepoint_results(capture: RetrievalCapture | None, result: str) -
             source_url=item.get("url"),
             metadata=metadata or {},
             size_bytes=int(item["size"]) if isinstance(item.get("size"), (int, str)) and str(item.get("size")).isdigit() else None,
+            exportable=exportable,
         )
         if item.get("content"):
             draft.merge_content(str(item["content"]))

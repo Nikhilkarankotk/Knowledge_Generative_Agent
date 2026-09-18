@@ -223,6 +223,47 @@ def test_search_pages_capture_includes_space_and_parent() -> None:
     assert "REST endpoint reference" in (item.content_reference or "")
 
 
+def test_search_hits_are_not_exportable_until_the_page_is_read() -> None:
+    """Only pages the agent actually opens (get_page) are export sources.
+
+    A Confluence search may return several candidate pages; the export must
+    contain just the ones whose content was read to generate the answer.
+    """
+    from app.export.capture import RetrievalCapture
+
+    stub = StubConfluence()
+    stub.search_result = (
+        "[Source: Confluence: Netflix Design (space: ARCH)]\n"
+        "Page id: 1\nURL: https://wiki/1\nExcerpt: netflix\n\n"
+        "[Source: Confluence: Amazon Design (space: ARCH)]\n"
+        "Page id: 2\nURL: https://wiki/2\nExcerpt: amazon\n\n"
+        "[Source: Confluence: Twitter Design (space: ARCH)]\n"
+        "Page id: 3\nURL: https://wiki/3\nExcerpt: twitter"
+    )
+    stub.page_result = (
+        "[Source: Confluence: Netflix Design]\n"
+        "https://wiki/1\n"
+        "Full Netflix design content"
+    )
+    capture = RetrievalCapture()
+    plugin = ConfluencePlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    plugin.search_pages("system design")
+    # All three are recorded as candidates, none exportable yet.
+    assert {i.source_id for i in capture.items} == {"1", "2", "3"}
+    assert all(i.exportable is False for i in capture.items)
+
+    # The agent reads only the Netflix page to answer.
+    plugin.get_page("1")
+
+    by_id = {i.source_id: i for i in capture.items}
+    assert by_id["1"].exportable is True
+    assert by_id["2"].exportable is False
+    assert by_id["3"].exportable is False
+    # The read page carries the full content, not just the search excerpt.
+    assert "Full Netflix design content" in (by_id["1"].content_reference or "")
+
+
 def test_search_pages_capture_includes_recent_editors() -> None:
     from app.export.capture import RetrievalCapture
 

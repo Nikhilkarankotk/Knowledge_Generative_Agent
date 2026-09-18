@@ -2,6 +2,8 @@
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import (
+    AnthropicFoundryApiError,
+    AzureOpenAIApiError,
     ChatbotError,
     ChatMessageNotFoundException,
     IllegalArgumentException,
@@ -20,4 +22,6 @@ __all__ = [
     "IllegalStateException",
     "ChatMessageNotFoundException",
     "MistralApiError",
+    "AzureOpenAIApiError",
+    "AnthropicFoundryApiError",
 ]

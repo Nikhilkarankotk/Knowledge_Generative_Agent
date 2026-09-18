@@ -144,5 +144,46 @@ export class Api {
       observe: 'response'
     });
   }
+
+  /**
+   * Download ONLY the Confluence documents used to generate one AI response
+   * (`confluence-sources.zip`: `Confluence/<Page>.docx` per page + `metadata.json`).
+   * No chat history, no earlier queries, no other responses' sources.
+   */
+  downloadResponseSources(chatMessageId: number): Observable<HttpResponse<Blob>> {
+    return this.http.post(`${this.backendUrl}/knowledge-export/${chatMessageId}/sources`, {}, {
+      headers: this.getChatHeaders(false),
+      responseType: 'blob',
+      observe: 'response'
+    });
+  }
+
+  /**
+   * Download the Confluence documents behind the most recent response in the
+   * current session that actually used Confluence pages. The server resolves the
+   * target message, so this works after a page refresh regardless of which
+   * message happens to be last.
+   */
+  downloadLatestResponseSources(): Observable<HttpResponse<Blob>> {
+    return this.http.post(`${this.backendUrl}/knowledge-export/latest/sources`, {}, {
+      headers: this.getChatHeaders(false),
+      responseType: 'blob',
+      observe: 'response'
+    });
+  }
+
+  /**
+   * Download the whole chat session as one organized `Export.zip`:
+   * `ChatHistory/QueryN_Response.docx`, `Confluence/QueryN/<Page>.docx` (only the
+   * pages used for that answer, each written once) and a `metadata.json`
+   * query -> source mapping. Scoped by the X-Session-ID header.
+   */
+  downloadSessionExport(): Observable<HttpResponse<Blob>> {
+    return this.http.post(`${this.backendUrl}/knowledge-export/session`, {}, {
+      headers: this.getChatHeaders(false),
+      responseType: 'blob',
+      observe: 'response'
+    });
+  }
 }
 

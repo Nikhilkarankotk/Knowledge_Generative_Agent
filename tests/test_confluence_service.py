@@ -375,7 +375,10 @@ def test_get_page_strips_html_and_attributes() -> None:
 
     assert output.startswith("[Source: Confluence: Onboarding]")
     assert f"{BASE_URL}/spaces/OBS/pages/2000" in output
-    assert "Connect to VPN" in output
+    # Inline <b> is preserved as markdown bold (exporters render it as a bold
+    # run); the words are separated correctly around the markers.
+    assert "Connect to **VPN**." in output
+    assert "Connect to VPN" in output.replace("**", "")
     assert "Then install the tools" in output
     assert "alert" not in output
 

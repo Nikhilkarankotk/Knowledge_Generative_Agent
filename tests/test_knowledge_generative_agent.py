@@ -310,12 +310,24 @@ def test_system_instructions_mandate_automatic_invocation_and_no_permission_aski
     assert "authorized to call your tools automatically" in SYSTEM_INSTRUCTIONS
     assert "NEVER ask the user for" in SYSTEM_INSTRUCTIONS
     assert "permission to search a knowledge source" in SYSTEM_INSTRUCTIONS
-    assert "invoke ConfluencePlugin immediately" in SYSTEM_INSTRUCTIONS
+    # Architecture/design/technical questions fan out to BOTH documentation
+    # sources in the same turn - SharePoint is a co-primary source, not a fallback.
+    assert "invoke ConfluencePlugin AND" in SYSTEM_INSTRUCTIONS
+    assert "SharePointPlugin (search_sharepoint_content) in the same turn" in SYSTEM_INSTRUCTIONS
     assert "Do not claim that Confluence or the uploaded documents contain no information" in (
         SYSTEM_INSTRUCTIONS
     )
     assert "Answer, then stop." in SYSTEM_INSTRUCTIONS
     assert "broaden the search and search again automatically" in SYSTEM_INSTRUCTIONS
+
+
+def test_system_instructions_route_sharepoint_to_content_search_not_site_listing() -> None:
+    """The agent used to call list_sharepoint_documents (which lists SITES in
+    tenant-wide mode) and concluded SharePoint had nothing; it must search content."""
+    assert "start with search_sharepoint_content" in SYSTEM_INSTRUCTIONS
+    assert "Do NOT use list_sharepoint_documents to look for a document" in SYSTEM_INSTRUCTIONS
+    assert "lists SharePoint *sites*, not files" in SYSTEM_INSTRUCTIONS
+    assert "retry search_sharepoint_content with the core subject" in SYSTEM_INSTRUCTIONS
 
 
 def test_system_instructions_have_no_hardcoded_routing_map() -> None:

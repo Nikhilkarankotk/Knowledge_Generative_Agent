@@ -92,6 +92,51 @@ NO_FOLDERS_CONFIGURED = (
 )
 
 
+# Words that carry no search signal in a natural-language question. Graph search
+# ANDs every token, so leaving these in makes an otherwise good query miss.
+_SEARCH_STOPWORDS = frozenset(
+    """
+    a an the and or of for to in on at by with from into about as is are was were be
+    been being this that these those it its their there here what which who whom whose
+    when where why how do does did can could should would will shall may might must
+    explain describe show tell give provide list summarize summarise detail details
+    overview please me us our your you i we they them any all some
+    """.split()
+)
+
+
+def _search_keywords(query: str) -> list[str]:
+    """Distinctive, order-preserving keywords of a question (``CI/CD`` -> ``cicd``)."""
+    text = (query or "").casefold()
+    # Keep compound tokens like "ci/cd" and "job_portal" searchable as one word.
+    text = text.replace("/", "").replace("_", " ").replace("-", " ")
+    keywords: list[str] = []
+    for token in re.findall(r"[a-z0-9]+", text):
+        if len(token) <= 1 or token in _SEARCH_STOPWORDS:
+            continue
+        if token not in keywords:
+            keywords.append(token)
+    return keywords
+
+
+def _query_variants(query: str) -> list[str]:
+    """Search strings to try in order: verbatim, keywords, then shorter subsets."""
+    variants = [(query or "").strip()]
+    keywords = _search_keywords(query)
+    if keywords:
+        variants.append(" ".join(keywords))
+        # Drop generic trailing/leading words progressively (keep >= 2 keywords).
+        generic = {"application", "app", "web", "system", "design", "architecture", "flow", "document"}
+        distinctive = [k for k in keywords if k not in generic]
+        if distinctive and distinctive != keywords:
+            variants.append(" ".join(distinctive))
+        # Pairs of the most distinctive words (proper nouns / product names tend to
+        # come first in a question: "Job Portal ...").
+        if len(distinctive) > 2:
+            variants.append(" ".join(distinctive[:2]))
+    return [v for v in dict.fromkeys(variants) if v]
+
+
 def _graph_person_name(identity: Any) -> str:
     """Best-effort display name for a Graph identity set (never fabricated)."""
     if not isinstance(identity, dict):
@@ -558,7 +603,7 @@ class SharePointService:
     # -- folder listing / scoped search -------------------------------------------
 
     def _list_folder_children(self, drive_id: str, folder: str) -> list[dict[str, Any]]:
-        folder = (folder or "").strip().strip("/")
+        folder = self._graph_folder(folder)
         if folder:
             endpoint = (
                 f"drives/{_quote(drive_id, safe='')}/root:/{_quote(folder, safe='/')}:/children"
@@ -574,7 +619,7 @@ class SharePointService:
         }
         payload = self._request("GET", endpoint, params=params)
         items = [i for i in payload.get("value", []) if isinstance(i, dict)]
-        parent = f"Shared Documents/{folder}".strip("/") or "Shared Documents"
+        parent = self._display_folder(folder)
         for item in items:
             item["_drive_id"] = drive_id
             item["_parent_path"] = parent
@@ -582,7 +627,7 @@ class SharePointService:
 
     def _walk_folder_items(self, drive_id: str, folder: str, max_items: int) -> list[dict[str, Any]]:
         """List all items under an allowed folder (bounded; stays inside the folder)."""
-        folder = (folder or "").strip().strip("/")
+        folder = self._graph_folder(folder)
         stack = [folder]
         results: list[dict[str, Any]] = []
         while stack and len(results) < max_items:
@@ -598,11 +643,13 @@ class SharePointService:
         return results
 
     def _query_tokens(self, query: str) -> list[str]:
-        return [tok.lower() for tok in re.findall(r"[A-Za-z0-9]+", query) if len(tok) >= 3]
+        """Distinctive search keywords (stop-words such as "explain", "the",
+        "for" removed) so a natural-language question does not match every file."""
+        return [tok for tok in _search_keywords(query) if len(tok) >= 2]
 
     @staticmethod
     def _name_contains(item: dict[str, Any], tokens: list[str]) -> bool:
-        name = str(item.get("name") or "").lower()
+        name = str(item.get("name") or "").lower().replace("_", " ").replace("-", " ")
         return any(token in name for token in tokens)
 
     def _try_content_text(self, item: dict[str, Any]) -> str:
@@ -684,7 +731,21 @@ class SharePointService:
     def _folder_prefix(item_folder: str, allowed_folder: str) -> bool:
         item_folder = item_folder.strip("/").lower()
         allowed = allowed_folder.strip("/").lower()
+        if allowed in {".", ""}:
+            return True  # "." = the whole Documents library (root + subfolders)
         return item_folder == allowed or item_folder.startswith(allowed + "/")
+
+    @staticmethod
+    def _graph_folder(folder: str) -> str:
+        """Drive-relative path for Graph calls (``.`` -> library root)."""
+        folder = (folder or "").strip().strip("/")
+        return "" if folder == "." else folder
+
+    @staticmethod
+    def _display_folder(folder: str) -> str:
+        """Human-readable library path (``.`` -> ``Shared Documents``)."""
+        folder = (folder or "").strip().strip("/")
+        return "Shared Documents" if folder in {".", ""} else f"Shared Documents/{folder}"
 
     def _require_item_in_allowed_folder(
         self, item: dict[str, Any], folder_gate: str | None
@@ -778,6 +839,52 @@ class SharePointService:
             "_parent_path": parent_path,
         }
 
+    def _search_items_relaxed(self, query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+        """Graph search with progressive query relaxation.
+
+        Microsoft Graph search ANDs every token, so a natural-language question
+        ("Explain the CI/CD pipeline flow for the Job Portal web application")
+        matches nothing even though "Job Portal pipeline" would. Try the verbatim
+        query first, then the distinctive keywords, then progressively shorter
+        keyword sets, and finally the individual keywords (union, de-duplicated).
+        Returns the hits and the query variant that produced them.
+        """
+        tried: list[str] = []
+        for variant in _query_variants(query):
+            if variant in tried:
+                continue
+            tried.append(variant)
+            items = self._graph_search_items(variant, limit)
+            if items:
+                if variant != query:
+                    logger.info(
+                        "SharePoint search relaxed %r -> %r (%d hit(s))",
+                        query,
+                        variant,
+                        len(items),
+                    )
+                return items, variant
+        # Last resort: union of single-keyword searches (ranked by hit frequency).
+        keywords = _search_keywords(query)
+        if len(keywords) > 1:
+            merged: dict[str, dict[str, Any]] = {}
+            score: dict[str, int] = {}
+            for keyword in keywords:
+                for item in self._graph_search_items(keyword, limit):
+                    key = str(item.get("id") or item.get("name"))
+                    merged.setdefault(key, item)
+                    score[key] = score.get(key, 0) + 1
+            if merged:
+                ranked = sorted(merged.values(), key=lambda it: -score[str(it.get("id") or it.get("name"))])
+                logger.info(
+                    "SharePoint search relaxed %r -> keyword union %r (%d hit(s))",
+                    query,
+                    keywords,
+                    len(ranked),
+                )
+                return ranked[:limit], " OR ".join(keywords)
+        return [], query
+
     def _tenant_wide_search(
         self,
         query: str,
@@ -785,7 +892,7 @@ class SharePointService:
         *,
         include_content: bool,
     ) -> str:
-        items = self._graph_search_items(query, limit)
+        items, matched_query = self._search_items_relaxed(query, limit)
         if not items:
             return "No matching SharePoint documents found."
 
@@ -800,6 +907,7 @@ class SharePointService:
         header = (
             f"[Source: SharePoint] Search results for \"{query}\" across all "
             "SharePoint content accessible to this agent"
+            + (f" (matched on \"{matched_query}\")" if matched_query != query else "")
             + (f" (content of {len(items)} match(es))" if include_content else "")
             + ":"
         )
@@ -921,7 +1029,7 @@ class SharePointService:
         if self._allowed_folders:
             lines.append("Allowed knowledge-base folder(s):")
             for folder in sorted(self._allowed_folders):
-                lines.append(f"- Shared Documents/{folder}")
+                lines.append(f"- {self._display_folder(folder)}")
         return "\n".join(lines)
 
     def get_site(self) -> str:
@@ -975,11 +1083,11 @@ class SharePointService:
         if not items:
             return (
                 f"No files found in SharePoint site {site_id} "
-                f"(folder: Shared Documents/{folder})."
+                f"(folder: {self._display_folder(folder)})."
             )
         header = (
             f"[Source: SharePoint: site {site_id}]\n"
-            f"Folder: Shared Documents/{folder}\n"
+            f"Folder: {self._display_folder(folder)}\n"
             f"Document library drive id: {drive_id}"
         )
         lines = [header]
@@ -1012,7 +1120,7 @@ class SharePointService:
             )
         header = (
             f"[Source: SharePoint: site {site_id}] - "
-            f"Search results for \"{query}\" (folder: Shared Documents/{folder})"
+            f"Search results for \"{query}\" (folder: {self._display_folder(folder)})"
         )
         blocks = [header] + [self._format_drive_item(item) for item in items]
         return "\n\n".join(blocks)
@@ -1135,7 +1243,7 @@ class SharePointService:
         blocks = [self._format_item_with_content(item) for item in items]
         summary = (
             f"[Source: SharePoint: site {site_id}] - "
-            f"Search results for \"{query}\" (folder: Shared Documents/{folder}, "
+            f"Search results for \"{query}\" (folder: {self._display_folder(folder)}, "
             f"content of {len(items)} match(es))"
         )
         return summary + "\n\n" + "\n\n".join(blocks)

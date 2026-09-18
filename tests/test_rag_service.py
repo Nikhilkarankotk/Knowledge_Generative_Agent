@@ -216,6 +216,40 @@ top_k=5,
     assert "Question: Tell me about the project" in prompt
 
 
+def test_query_uses_separate_answer_service_when_provided(db_session) -> None:
+    """The final answer must come from the injected answer_service (e.g. Azure luna),
+    while embeddings/OCR keep using the Mistral client."""
+    embed_llm = FakeLLM()
+    embed_llm.chat_response = "SHOULD NOT BE USED"
+    save_chunk(db_session, "s6b", "project insight", [1.0, 0.0])
+
+    class AnswerSpy:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def generate_response(self, prompt: str) -> str:
+            self.prompts.append(prompt)
+            return "Answer from luna"
+
+    answer_spy = AnswerSpy()
+    service = RagService(
+        document_parser=None,  # type: ignore[arg-type]
+        text_chunker=TextChunker(),
+        embedding_service=StaticEmbeddingService([1.0, 0.0]),
+        chunk_repo=DocumentChunkRepository(db_session),
+        mistral_api_service=MistralApiService(embed_llm),
+        chunk_size=500,
+        top_k=5,
+        answer_service=answer_spy,
+    )
+
+    answer = service.query("Tell me about the project", "s6b")
+    assert answer == "Answer from luna"
+    # The Mistral chat path was never used for the final answer.
+    assert embed_llm.chat_requests == []
+    assert answer_spy.prompts and "You are a portfolio assistant." in answer_spy.prompts[0]
+
+
 def test_ingest_image_routes_text_through_ocr(db_session) -> None:
     seen: dict[str, str] = {}
 

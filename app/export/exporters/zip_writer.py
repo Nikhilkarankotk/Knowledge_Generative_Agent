@@ -28,12 +28,18 @@ _MANIFEST_NAME = "manifest.json"
 _UNSAFE_SEGMENT = re.compile(r"[\\\x00-\x1f\x7f]|[.][.][^.]|^[.]+$")
 
 
-def safe_relpath(name: str, *, max_depth: int = 8) -> str:
+def safe_relpath(name: str, *, max_depth: int = 32) -> str:
     """Sanitize an archive-relative path, keeping directory structure.
 
     Splits on ``/``, sanitizes each component, drops empties and traversal
     segments, and bounds the depth so archive entries can never escape the
     archive root or encode absolute/drive-hostile paths.
+
+    The depth bound is generous: repository source trees (e.g. Java packages
+    ``src/main/java/com/acme/orders/OrderController.java`` under a per-repo
+    folder) routinely exceed 8 levels. When a path is still deeper than
+    ``max_depth`` the *leaf filename is always kept* so files never collapse
+    into an anonymous ``.../com`` entry.
     """
     raw = (name or "").strip().replace("\\", "/")
     parts: list[str] = []
@@ -46,10 +52,11 @@ def safe_relpath(name: str, *, max_depth: int = 8) -> str:
             segment = "file"
         if segment:
             parts.append(segment)
-        if len(parts) >= max_depth:
-            break
     if not parts:
         return "file.txt"
+    if len(parts) > max_depth:
+        # Keep the leading folders and the real file name; elide the middle.
+        parts = parts[: max_depth - 1] + [parts[-1]]
     return "/".join(parts)
 
 

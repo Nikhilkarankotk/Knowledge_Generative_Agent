@@ -483,6 +483,57 @@ def test_documents_drive_resolved_for_retrieval() -> None:
     assert f"/sites/{SITE}/drives" in " ".join(seen)
 
 
+def test_root_folder_allowlist_lists_and_reads_library_root() -> None:
+    """SHAREPOINT_ALLOWED_FOLDERS='.' scopes the agent to the whole Documents
+    library of the configured site (the 'Shared Documents' view), where files
+    stored directly at the root - not in a subfolder - must be listable, searchable
+    and readable, while the scope still never leaves that one site."""
+    from app.core.config import _normalize_folder_id
+
+    assert _normalize_folder_id(".") == "."
+    assert _normalize_folder_id("Shared Documents") == "."
+    assert _normalize_folder_id("root") == "."
+
+    seen: list[str] = []
+
+    def graph_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append(path)
+        if path.endswith(f"/sites/{SITE_HOST}:/sites/KnowledgeGenAgent"):
+            return httpx.Response(200, json=SITE_PAYLOAD, request=request)
+        if path.endswith(f"/sites/{SITE}/drives"):
+            return httpx.Response(200, json=_drives_payload(), request=request)
+        if path.endswith(f"/drives/{DRIVE}/root/children"):
+            return httpx.Response(
+                200,
+                json={"value": [_file_item("Job_Portal CICD Pipeline flow.md", "jp", in_folder=False)]},
+                request=request,
+            )
+        if path.endswith(f"/drives/{DRIVE}/items/jp"):
+            return httpx.Response(
+                200, json=_file_item("Job_Portal CICD Pipeline flow.md", "jp", in_folder=False), request=request
+            )
+        if path.endswith(f"/drives/{DRIVE}/items/jp/content"):
+            return httpx.Response(200, content=b"Job Portal pipeline text", request=request)
+        raise AssertionError(f"unexpected path: {path}")
+
+    service = _make_service(graph_handler, allowed_folders=["."])
+
+    listing = service.list_files()
+    assert "Folder: Shared Documents" in listing
+    assert "Shared Documents/." not in listing
+    assert "Job_Portal CICD Pipeline flow.md" in listing
+    assert any(p.endswith("/root/children") for p in seen)  # root, not a subfolder
+
+    # A natural-language question still finds the root file by distinctive keywords.
+    found = service.search("Explain the CI/CD pipeline flow for the Job Portal web application")
+    assert "Job_Portal CICD Pipeline flow.md" in found
+
+    # A root-level item is inside the '.' scope, so it can be read.
+    content = service.get_document_content(document_id="jp", drive_id=DRIVE)
+    assert "Job Portal pipeline text" in content
+
+
 def test_list_files_lists_allowed_folder_only() -> None:
     def graph_handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -993,6 +1044,50 @@ def test_tenant_wide_search_no_hits_returns_honest_message() -> None:
 
     service = _make_tenant_wide_service(graph_handler)
     assert "No matching SharePoint documents found." in service.search("zzz")
+
+
+def test_tenant_wide_search_relaxes_natural_language_question() -> None:
+    """Regression: Graph ANDs every token, so the verbatim question
+    'Explain the CI/CD pipeline flow for the Job Portal web application' found
+    nothing although the 'Job_Portal_Web_Application CICD Pipeline flow.pdf'
+    document exists. The search must fall back to distinctive keywords."""
+    import json
+
+    queries: list[str] = []
+    hit = dict(SEARCH_HIT, name="Job_Portal_Web_Application CICD Pipeline flow.pdf")
+
+    def graph_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/search/query"):
+            body = json.loads(request.read().decode())
+            q = body["requests"][0]["query"]["queryString"]
+            queries.append(q)
+            # Only a keyword-style query (no stopwords) matches, like real Graph.
+            if "explain" in q.casefold() or " the " in f" {q.casefold()} ":
+                return httpx.Response(200, json={"value": []}, request=request)
+            return httpx.Response(200, json=_search_query_payload(hit), request=request)
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    service = _make_tenant_wide_service(graph_handler)
+    output = service.search("Explain the CI/CD pipeline flow for the Job Portal web application", limit=5)
+
+    assert "Job_Portal_Web_Application CICD Pipeline flow.pdf" in output
+    # Verbatim first, then a relaxed keyword variant.
+    assert queries[0].startswith("Explain the CI/CD")
+    assert len(queries) >= 2
+    assert "explain" not in queries[1].casefold()
+    assert "matched on" in output  # the response says which variant matched
+
+
+def test_search_keyword_helpers_drop_stopwords_and_join_compounds() -> None:
+    from app.services.sharepoint_service import _query_variants, _search_keywords
+
+    assert _search_keywords("Explain the CI/CD pipeline flow for the Job Portal web application") == [
+        "cicd", "pipeline", "flow", "job", "portal", "web", "application",
+    ]
+    variants = _query_variants("Explain the CI/CD pipeline flow for the Job Portal web application")
+    assert variants[0].startswith("Explain the")
+    assert "cicd pipeline flow job portal web application" in variants
+    assert "cicd pipeline job portal" in variants  # generic words dropped
 
 
 def test_tenant_wide_get_document_reads_by_drive_and_item_ids() -> None:

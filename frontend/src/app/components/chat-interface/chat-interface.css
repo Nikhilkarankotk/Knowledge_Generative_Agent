@@ -573,6 +573,12 @@
   border-width: 2px;
 }
 
+.copilot-tools .export-error {
+  align-self: center;
+  font-size: 11px;
+  color: #ff8a8a;
+}
+
 .lang-badge {
   display: inline-flex;
   align-items: center;

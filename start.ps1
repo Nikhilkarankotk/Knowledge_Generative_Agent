@@ -24,10 +24,29 @@ if (-not (Test-Path -LiteralPath $python)) {
 }
 
 Set-Location -LiteralPath $projectRoot
+
+# The .env file is authoritative for database settings. pydantic-settings prefers
+# environment variables over .env, so drop any stale DB_* overrides first -
+# a leftover DB_PASSWORD/DB_PORT in the shell can silently point the app at the
+# wrong database (auth failures, wrong port).
 Remove-Item Env:MISTRAL_CHAT_MODEL -ErrorAction SilentlyContinue
-Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
+@("DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DRIVER", "DATABASE_URL") | ForEach-Object {
+    Remove-Item "Env:$_" -ErrorAction SilentlyContinue
+}
+# Belt-and-suspenders: never let a wrong cwd/override change the database name.
 $env:DB_NAME = "Knowledge_Gen_Agent"
 
+# Show the real database target (resolved from .env) instead of a hardcoded one.
+# Falls back to the application default (5433) when .env omits DB_PORT.
+$resolvedPort = "5433"
+$envFilePath = Join-Path $projectRoot ".env"
+if (Test-Path -LiteralPath $envFilePath) {
+    $dbPortLine = Get-Content -LiteralPath $envFilePath | Where-Object { $_ -match "^\s*DB_PORT\s*=" } | Select-Object -First 1
+    if ($dbPortLine) {
+        $resolvedPort = (($dbPortLine -split "=", 2)[1]).Trim().Trim('"')
+    }
+}
+
 Write-Host "Starting Knowledge_Gen_Agent backend from $projectRoot"
-Write-Host "Database: $($env:DB_NAME) @ localhost:5433"
+Write-Host "Database: $($env:DB_NAME) @ localhost:$resolvedPort"
 & $python -m uvicorn app.main:app --host 127.0.0.1 --port 8000

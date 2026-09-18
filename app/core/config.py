@@ -52,6 +52,33 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 500
     rag_top_k: int = 5
 
+    # --- RAG answer-generation LLM (Azure OpenAI, "luna" deployment) ---
+    # When RAG_LLM_PROVIDER=azure_openai (with a key, endpoint and deployment set),
+    # the final RAG answer generation is routed to an Azure OpenAI chat deployment
+    # (e.g. the "luna" ChatGPT deployment) instead of Mistral. Embeddings and OCR
+    # always keep using the Mistral client above; only the RAG answer LLM changes.
+    # Leave RAG_LLM_PROVIDER empty (or "mistral") to keep using Mistral for answers.
+    rag_llm_provider: str = ""
+    azure_openai_api_key: str = ""
+    # Azure AI Foundry OpenAI-compatible endpoint. For the Foundry v1 surface use
+    # the ".../openai/v1" base URL, e.g.
+    #   https://<resource>.services.ai.azure.com/openai/v1
+    # (the model/deployment name is sent in the request body, not the URL path).
+    azure_openai_endpoint: str = ""
+    # The deployment / model name sent in the body, e.g. "gpt-5.6-luna".
+    azure_openai_deployment: str = "gpt-5.6-luna"
+    # Leave empty for the Foundry "/openai/v1" surface. Set an api-version only for
+    # classic "*.openai.azure.com/openai/deployments/..." endpoints.
+    azure_openai_api_version: str = ""
+    azure_openai_timeout_seconds: float = 60.0
+    azure_openai_retries: int = 2
+    azure_openai_max_tokens: int = 1024
+    azure_openai_temperature: float = 0.2
+    # Some models (e.g. the gpt-5.* "luna" family) only accept the default
+    # temperature; keep this False so no temperature is sent. Set True for models
+    # that accept a custom temperature.
+    azure_openai_supports_temperature: bool = False
+
     # --- Export (source-aware, context-grounded export service) ---
     # Depot limits for export output. The ExportService validates the proposed
     # export (native files, generated documents, archives) against these.
@@ -119,20 +146,33 @@ class Settings(BaseSettings):
     # access entirely (the agent answers "No GitHub repositories are configured").
     github_allowed_repositories: str = ""
 
-    # --- GitHub report analysis LLM (OpenRouter, Phase 2) ---
+    # --- GitHub report analysis LLM (OpenRouter / Anthropic Foundry, Phase 2) ---
     # Optional *separate* LLM provider used to write the GitHub repository analysis
     # narrative (ReportSynthesizer). Leave GITHUB_LLM_PROVIDER empty or set it to
-    # "mistral" to keep using the Mistral synthesis client; set it to "openrouter"
-    # to route GitHub report synthesis through OpenRouter (an OpenAI-compatible
-    # endpoint). This only affects the generated report narrative - chat, RAG and
-    # embeddings always keep using the Mistral client above.
-    # OPENROUTER_* mirror the OpenAI-compatible OpenRouter API.
+    # "mistral" to keep using the Mistral synthesis client; set it to:
+    #   * "openrouter"         -> OpenRouter (OpenAI-compatible chat completions)
+    #   * "anthropic_foundry"  -> Claude on Azure AI Foundry (e.g. claude-opus-4-8)
+    # This only affects the generated report narrative - chat, RAG and embeddings
+    # always keep using the Mistral client above.
     github_llm_provider: str = ""
     github_llm_model: str = "openrouter/free"
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_timeout_seconds: float = 60.0
     openrouter_retries: int = 2
+
+    # --- Anthropic on Azure AI Foundry (Claude Opus report synthesis) ---
+    # Used when GITHUB_LLM_PROVIDER=anthropic_foundry. The Foundry Anthropic surface
+    # is ".../anthropic" (the client appends /v1/messages) and authenticates with the
+    # x-api-key header. The model name (e.g. "claude-opus-4-8") is sent in the body.
+    anthropic_foundry_api_key: str = ""
+    anthropic_foundry_endpoint: str = ""
+    anthropic_foundry_model: str = "claude-opus-4-8"
+    anthropic_foundry_version: str = "2023-06-01"
+    anthropic_foundry_timeout_seconds: float = 90.0
+    anthropic_foundry_retries: int = 2
+    # Optional sampling temperature; leave None to use the model default.
+    anthropic_foundry_temperature: float | None = None
     # Bounds for the repository analysis that feeds the report narrative.
     # Analysis is a deep, asynchronous operation: breadth is preferred over
     # latency. This is a high safety ceiling; the byte budget governs how much
@@ -214,9 +254,10 @@ class Settings(BaseSettings):
         """Parsed, normalized folder allowlist from ``SHAREPOINT_ALLOWED_FOLDERS``.
 
         Folders are drive-relative paths (e.g. ``sharepoint-rag-knowledge-base``)
-        separated by ``;``. Unsafe entries (absolute paths, traversal sequences or
-        Graph resource tokens) are dropped so the configured list can only ever
-        name plain relative folder paths.
+        separated by ``;``. The special entry ``.`` names the root of the
+        Documents library (the "Shared Documents" view). Unsafe entries (absolute
+        paths, traversal sequences or Graph resource tokens) are dropped so the
+        configured list can only ever name plain relative folder paths.
         """
         result: list[str] = []
         seen: set[str] = set()
@@ -370,6 +411,10 @@ def _normalize_folder_id(value: str) -> str:
     if folder.startswith(("/", "\\")) or "\\" in folder:
         return ""
     folder = folder.strip("/")
+    # "." (or "root") names the root of the Documents library itself, i.e. the
+    # "Shared Documents" view, for libraries whose files are not in a subfolder.
+    if folder in {".", "root", "ROOT", "Shared Documents", "shared documents"}:
+        return "."
     lower = folder.lower()
     if not folder:
         return ""

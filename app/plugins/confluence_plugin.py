@@ -345,7 +345,14 @@ def _capture_search_results(
     result: str,
     service: ConfluenceService | None = None,
 ) -> None:
-    """Persist each returned Confluence page into the turn's export capture."""
+    """Record each search hit as a *candidate* in the turn's export capture.
+
+    A search result only proves a page was *found*, not that it was *used*.
+    Candidates are stored with ``exportable=False`` so they never end up in an
+    export on their own; a page becomes exportable only when the agent actually
+    opens it with ``get_page`` (see :func:`_capture_page_result`), which is the
+    content that grounds the answer.
+    """
     if capture is None:
         return
     for page in parse_confluence_search(result):
@@ -374,6 +381,8 @@ def _capture_search_results(
             source_url=page.get("url"),
             metadata=metadata,
             export_strategy=ScenarioType.GENERATED_DOCUMENT.value,
+            # Found by search but not (yet) read: not an export source on its own.
+            exportable=False,
         )
         if page.get("excerpt"):
             draft.merge_content(str(page["excerpt"]))
@@ -405,6 +414,8 @@ def _capture_page_result(capture: RetrievalCapture | None, page_id: str, result:
         source_url=parsed.get("url"),
         metadata=metadata,
         export_strategy=ScenarioType.GENERATED_DOCUMENT.value,
+        # The agent read this page to answer: it IS a source of the response.
+        exportable=True,
     )
     if parsed.get("content"):
         draft.merge_content(str(parsed["content"]))

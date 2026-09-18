@@ -52,6 +52,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
   exportedMessageId: number | null = null;
   knowledgeExporting = false;
   knowledgeExported = false;
+  knowledgeExportError: string | null = null;
 
   @ViewChild('chatContainer') private chatContainer!: ElementRef;
   @ViewChild('fileInput') private fileInput!: ElementRef;
@@ -192,23 +193,49 @@ export class ChatInterface implements AfterViewChecked, OnInit {
 
   exportKnowledge() {
     if (this.knowledgeExporting) return;
-    const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant' && m.id);
-    const messageId = lastAssistant?.id;
-    if (!messageId) return;
+    // Export ONLY the source documents used to generate the latest AI response
+    // (Confluence pages, GitHub repo analysis, SharePoint files...) - no chat
+    // history, no earlier queries or their sources. The server names the file
+    // after what was used (confluence.zip / github.zip / sharepoint.zip, or
+    // "Knowledge Export.zip" when several systems contributed) and resolves
+    // "latest" to the newest response that actually used sources, so this works
+    // after a page refresh too.
+    if (!this.messages.some((m) => m.role === 'assistant' && m.id)) return;
     this.knowledgeExporting = true;
-    this.api.downloadKnowledgeExport(messageId).subscribe({
+    this.knowledgeExportError = null;
+    this.api.downloadLatestResponseSources().subscribe({
       next: (res) => {
         this.knowledgeExporting = false;
         this.knowledgeExported = true;
-        this.saveBlobFromResponse(res, `knowledge-export-${messageId}.zip`);
+        this.saveBlobFromResponse(res, 'Knowledge Export.zip');
         this.cdr.detectChanges();
         setTimeout(() => (this.knowledgeExported = false), 3000);
       },
-      error: () => {
+      error: async (err) => {
         this.knowledgeExporting = false;
+        this.knowledgeExportError = await this.readErrorMessage(err);
         this.cdr.detectChanges();
+        setTimeout(() => {
+          this.knowledgeExportError = null;
+          this.cdr.detectChanges();
+        }, 5000);
       }
     });
+  }
+
+  /** Extract the server's `{message}` from a blob error response, if any. */
+  private async readErrorMessage(err: any): Promise<string> {
+    const fallback = 'Export failed. Please try again.';
+    try {
+      const body = err?.error;
+      if (body instanceof Blob) {
+        const parsed = JSON.parse(await body.text());
+        return parsed?.message || fallback;
+      }
+      return body?.message || fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   private saveBlobFromResponse(res: any, fallbackName: string) {

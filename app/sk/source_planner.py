@@ -42,13 +42,17 @@ SOURCE_DESCRIPTIONS: dict[str, str] = {
         "(PDF, DOCX, PPTX, XLSX, TXT and other attached files)"
     ),
     "confluence": (
-        "Confluence, the authoritative source for organizational and project "
-        "documentation: applications, architecture, system design, APIs, "
-        "deployment and release guides, security, ADRs, runbooks and project docs"
+        "Confluence wiki pages: application and project documentation, architecture "
+        "and system design pages, APIs, deployment and release guides, security, "
+        "ADRs, runbooks and project docs"
     ),
     "sharepoint": (
-        "SharePoint, the approved enterprise knowledge base: organizational and "
-        "operational documents, onboarding, policies, procedures and deployment guides"
+        "SharePoint document libraries (PDF, Word, Excel, PowerPoint files): "
+        "architecture and system design documents, CI/CD and deployment pipeline "
+        "flows, technical designs, onboarding, policies, procedures and other "
+        "enterprise documents. Holds documents that are NOT in Confluence, so it "
+        "must be searched alongside Confluence for any architecture, design, "
+        "deployment, pipeline or technical-documentation question"
     ),
     "github": (
         "GitHub repositories configured for this deployment: source code, READMEs, "
@@ -137,6 +141,18 @@ _HEURISTIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "enterprise document",
         "internal document",
         "operational",
+        # Documentation topics live in BOTH Confluence and SharePoint libraries.
+        "architecture",
+        "system design",
+        "design document",
+        "deployment",
+        "pipeline",
+        "ci/cd",
+        "cicd",
+        "ci cd",
+        "workflow",
+        "technical documentation",
+        "specification",
     ),
     "github": (
         "github",
@@ -243,6 +259,37 @@ def heuristic_sources(user_message: str, available: Sequence[str]) -> list[str]:
     return [available[0]] if available else []
 
 
+# Documentation sources that hold *different* documents and must be searched
+# together: a design or pipeline document may live in either system.
+_DOCUMENTATION_SOURCES: tuple[str, ...] = ("confluence", "sharepoint")
+
+
+def pair_documentation_sources(
+    selections: list[SourceSelection], available: Sequence[str]
+) -> list[SourceSelection]:
+    """If the plan includes one documentation source, include the other too.
+
+    SharePoint libraries and Confluence hold different documents (e.g. CI/CD
+    pipeline PDFs only exist in SharePoint). A model plan that picks just one of
+    them would silently miss the other's evidence, so the sibling is appended
+    with an explanatory reason. Plans that select neither are left untouched.
+    """
+    chosen = {selection.type for selection in selections}
+    if not chosen & set(_DOCUMENTATION_SOURCES):
+        return selections
+    result = list(selections)
+    for source in _DOCUMENTATION_SOURCES:
+        if source in available and source not in chosen:
+            result.append(
+                SourceSelection(
+                    source,
+                    "documentation may live in either Confluence or SharePoint; "
+                    "searched alongside the planned documentation source",
+                )
+            )
+    return result
+
+
 def parse_source_plan(raw: str, available: Sequence[str]) -> list[str] | None:
     """Parse and validate a planner JSON response.
 
@@ -314,8 +361,10 @@ class LLMSourcePlanner:
 
         planned = parse_source_plan(raw, available)
         if planned is not None:
-            logger.info("Source planner selected %s", planned)
-            return [SourceSelection(source, "selected by the source planner") for source in planned]
+            selections = [SourceSelection(source, "selected by the source planner") for source in planned]
+            selections = pair_documentation_sources(selections, available)
+            logger.info("Source planner selected %s", [s.type for s in selections])
+            return selections
 
         fallback = heuristic_sources(user_message, available)
         logger.info("Source planner keyword fallback selected %s", fallback)
@@ -335,6 +384,11 @@ class LLMSourcePlanner:
                 "RULES:",
                 "- Choose every source that could contain relevant evidence; choose more",
                 "  than one when the question spans documentation and code.",
+                "- Confluence and SharePoint are BOTH documentation sources and hold",
+                "  different documents. For any question about architecture, system",
+                "  design, deployment, CI/CD pipelines, workflows or technical",
+                "  documentation, select BOTH confluence and sharepoint when both are",
+                "  available - never assume documentation is only in one of them.",
                 "- Choose only the sources that are genuinely relevant; do not select all",
                 "  sources by default, and do not always select only one.",
                 "- Never invent a source type that is not in the list above.",

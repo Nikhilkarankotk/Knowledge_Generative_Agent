@@ -22,6 +22,123 @@ _STATE_BLOCK = (
 )
 
 
+def _candidate(page_id: str, title: str) -> ExportItemDraft:
+    return ExportItemDraft(
+        source_type="CONFLUENCE", source_id=page_id, source_name=title, exportable=False
+    )
+
+
+def test_promote_relevant_candidates_picks_only_the_page_the_answer_is_about() -> None:
+    """Real scenario: search returned six design pages, the agent answered about
+    E-commerce without opening any page. Only the E-commerce page (plus the
+    GitHub repo that was read) may be exported - not Netflix/Twitter/Amazon..."""
+    capture = RetrievalCapture()
+    for page_id, title in [
+        ("2916353", "Amazon System Design and Architecture"),
+        ("983203", "Explore Confluence Features"),
+        ("622593", "Netflix System Design and Architecture"),
+        ("524300", "Twitter System Design and Architecture"),
+        ("3112961", "n8n System Design and Architecture"),
+        ("2785284", "E-Commerce Application System Design and Architecture"),
+    ]:
+        capture.add(_candidate(page_id, title))
+    capture.add(
+        ExportItemDraft(
+            source_type="GITHUB", source_id="acme/E-commerce_Application",
+            source_name="acme/E-commerce_Application", exportable=True,
+        )
+    )
+
+    promoted = capture.promote_relevant_candidates(
+        "Tell me about the E-commerce architecture",
+        "Here is the **E-Commerce System Design and Architectural Overview** based on ...\n\n"
+        + "Lots of detail. " * 40
+        # A passing comparison deep in the body must NOT pull Netflix in.
+        + "Unlike Netflix, the catalogue is product-centric.",
+    )
+
+    assert promoted == ["2785284"]
+    exportable = {i.source_id for i in capture.items if i.exportable}
+    assert exportable == {"2785284", "acme/E-commerce_Application"}
+
+
+def test_promote_relevant_candidates_is_a_noop_when_a_page_was_read() -> None:
+    """If get_page was used, that page is the ground truth - never widen it."""
+    capture = RetrievalCapture()
+    capture.add(_candidate("1", "Netflix System Design and Architecture"))
+    capture.add(_candidate("2", "Twitter System Design and Architecture"))
+    read = _candidate("1", "Netflix System Design and Architecture")
+    read.exportable = True
+    capture.add(read)  # merge promotes page 1
+
+    promoted = capture.promote_relevant_candidates("netflix and twitter", "Netflix ... Twitter ...")
+
+    assert promoted == []
+    assert {i.source_id for i in capture.items if i.exportable} == {"1"}
+
+
+def test_promote_relevant_candidates_ignores_generic_title_words() -> None:
+    capture = RetrievalCapture()
+    capture.add(_candidate("9", "System Design and Architecture"))  # no distinctive terms
+    assert capture.promote_relevant_candidates("system design", "system design answer") == []
+
+
+def _sp_candidate(doc_id: str, filename: str) -> ExportItemDraft:
+    return ExportItemDraft(
+        source_type="SHAREPOINT", source_id=doc_id, source_name=filename,
+        filename=filename, exportable=False,
+    )
+
+
+def test_promote_sharepoint_keeps_only_the_asked_applications_document() -> None:
+    """Real library: three PDFs match "pipeline"; a question about the Job Portal
+    must export ONLY the Job Portal PDF, not n8n's or Amazon's."""
+    capture = RetrievalCapture()
+    capture.add(_sp_candidate("JP", "Job_Portal_Web_Application CICD Pipeline flow.pdf"))
+    capture.add(_sp_candidate("N8", "n8n CICD Pipeline flow.pdf"))
+    capture.add(_sp_candidate("AZ", "System Design and Architecture of Amazon Shopping Kart.pdf"))
+
+    promoted = capture.promote_relevant_candidates(
+        "Explain the CI/CD pipeline flow for the Job Portal web application",
+        "Here is the CI/CD pipeline flow for the Job Portal web application ...",
+    )
+
+    assert promoted == ["JP"]
+    assert [i.source_name for i in capture.items if i.exportable] == [
+        "Job_Portal_Web_Application CICD Pipeline flow.pdf"
+    ]
+
+
+def test_promote_sharepoint_matches_on_subject_when_doc_kind_words_differ() -> None:
+    """"n8n" is the subject; the question says "deployment" not "pipeline"."""
+    capture = RetrievalCapture()
+    capture.add(_sp_candidate("N8", "n8n CICD Pipeline flow.pdf"))
+    capture.add(_sp_candidate("JP", "Job_Portal_Web_Application CICD Pipeline flow.pdf"))
+    assert capture.promote_relevant_candidates("How is n8n deployed?", "n8n is deployed via ...") == ["N8"]
+
+
+def test_promote_sharepoint_noop_when_a_document_was_opened() -> None:
+    capture = RetrievalCapture()
+    capture.add(_sp_candidate("N8", "n8n CICD Pipeline flow.pdf"))
+    opened = _sp_candidate("N8", "n8n CICD Pipeline flow.pdf")
+    opened.exportable = True
+    capture.add(opened)  # get_sharepoint_document read -> merge promotes
+    capture.add(_sp_candidate("JP", "Job_Portal_Web_Application CICD Pipeline flow.pdf"))
+    assert capture.promote_relevant_candidates("job portal pipeline", "job portal ...") == []
+    assert [i.source_id for i in capture.items if i.exportable] == ["N8"]
+
+
+def test_parse_sharepoint_items_skips_scoped_result_header() -> None:
+    text = (
+        "[Source: SharePoint: site host,438af,2512] - Search results for \"x\" "
+        "(folder: Shared Documents, content of 1 match(es))\n\n"
+        "[Source: SharePoint: Job_Portal_Web_Application CICD Pipeline flow.pdf]\n"
+        "URL: https://sp/x.pdf\nDrive id: d1\nDocument id: i1\nSize: 10 bytes"
+    )
+    items = parse_sharepoint_items(text)
+    assert [i["name"] for i in items] == ["Job_Portal_Web_Application CICD Pipeline flow.pdf"]
+
+
 def test_strip_retrieval_state_removes_only_the_state_block() -> None:
     text = "[Source: Confluence: Netflix]\nPage id: 1\nURL: https://wiki/1" + _STATE_BLOCK
     stripped = strip_retrieval_state(text)

@@ -165,6 +165,65 @@ def test_docx_exporter_produces_openable_document() -> None:
     assert any("Rate Sheet" in paragraph.text for paragraph in document.paragraphs)
 
 
+def test_docx_renders_confluence_page_with_professional_structure() -> None:
+    """Headings, bullets, bold runs, tables and code blocks map to real Word
+    structures (not one flat paragraph), with a header/footer and title block."""
+    from docx import Document
+
+    payload = ExportPayload(
+        title="Netflix System Design",
+        source_type="CONFLUENCE",
+        source_url="https://conf/netflix",
+        content=(
+            "Netflix System Design\n"                      # title echo -> dropped
+            "Source: https://conf/netflix\n"               # source echo -> dropped
+            "Scope: a reference architecture.\n\n"
+            "## 1.1 Functional requirements\n"
+            "- Register users and **manage** profiles.\n"
+            "- Browse titles by genre.\n\n"
+            "| Layer | Role |\n| --- | --- |\n| Edge | CDN |\n\n"
+            "```\n[Client] --> [API]\n```\n"
+        ),
+    )
+    document = Document(BytesIO(DocxExporter().render(payload)))
+    styles = [p.style.name for p in document.paragraphs if p.text.strip()]
+    texts = [p.text for p in document.paragraphs if p.text.strip()]
+
+    assert styles[0] == "Title"
+    assert any(s.startswith("Heading") for s in styles)
+    assert styles.count("List Bullet") == 2
+    # Title/Source echoes are not repeated in the body.
+    assert texts.count("Netflix System Design") == 1
+    assert not any(t.startswith("Source: https://") for t in texts)
+    # Bold markdown became a bold run, not literal asterisks.
+    assert not any("**" in t for t in texts)
+    bullet = next(p for p in document.paragraphs if p.style.name == "List Bullet")
+    assert any(r.bold for r in bullet.runs)
+    # A real table for the pipe table and a shaded 1x1 table for the code block.
+    assert len(document.tables) == 2
+    assert document.tables[0].rows[0].cells[0].text == "Layer"
+    assert "[Client] --> [API]" in document.tables[1].rows[0].cells[0].text
+    # Professional chrome: header carries the title, footer carries a page number.
+    section = document.sections[0]
+    assert "Netflix System Design" in section.header.paragraphs[0].text
+    assert "Page" in section.footer.paragraphs[0].text
+
+
+def test_parse_markdown_blocks_promotes_flattened_list_under_heading() -> None:
+    """Legacy captures lost <li> markers; short sentences right under a heading
+    are rendered as bullets rather than one run-on paragraph."""
+    from app.export.exporters.document_exporters import parse_markdown_blocks
+
+    text = (
+        "## Requirements\n"
+        "Register users and manage profiles.\n"
+        "Browse titles by genre.\n"
+        "Search with low latency.\n"
+    )
+    kinds = [b["kind"] for b in parse_markdown_blocks(text)]
+    assert kinds == ["heading", "bullet", "bullet", "bullet"]
+
+
 def test_xlsx_exporter_produces_openable_spreadsheet() -> None:
     from openpyxl import load_workbook
 
@@ -197,6 +256,17 @@ def test_native_exporter_requires_bytes() -> None:
 def test_safe_zip_entry_keeps_folder_structure() -> None:
     assert safe_relpath("uploaded_documents/policy.pdf") == "uploaded_documents/policy.pdf"
     assert safe_relpath("github/acme/api/source/app/main.py") == "github/acme/api/source/app/main.py"
+
+
+def test_safe_zip_entry_keeps_deep_java_package_paths_and_leaf_name() -> None:
+    """Regression: repository sources were truncated to '.../java/com' (depth 8)
+    and the real file names were lost; deep package paths must survive intact."""
+    deep = "GitHub/E-commerce_Application/source/Orders/src/main/java/com/acme/orders/OrderController.java"
+    assert safe_relpath(deep) == deep
+    # Even beyond the bound the leaf file name is preserved, never dropped.
+    very_deep = "/".join(["d"] * 40) + "/Leaf.java"
+    assert safe_relpath(very_deep).endswith("/Leaf.java")
+    assert safe_relpath(very_deep).count("/") <= 32
 
 
 def test_safe_zip_entry_defeats_traversal() -> None:

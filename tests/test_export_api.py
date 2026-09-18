@@ -187,6 +187,153 @@ def _seed_context_only(client_session, *, chat_message_id: int, session_id: str)
     client_session.commit()
 
 
+# ---------------------------------------------------------------------------
+# Session-wide export: POST /api/knowledge-export/session -> Export.zip
+# ---------------------------------------------------------------------------
+
+
+def test_session_export_downloads_organized_zip(client, db_session) -> None:
+    import json
+
+    session_id = "s-whole"
+    # Both queries retrieved the same Confluence page (src-1): it must appear ONCE.
+    _seed_exchange(db_session, session_id=session_id, user_text="Q one", assistant_text="A one", n_sources=2)
+    _seed_exchange(db_session, session_id=session_id, user_text="Q two", assistant_text="A two", n_sources=2)
+
+    response = client.post("/api/knowledge-export/session", headers={"X-Session-ID": session_id})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/zip")
+    assert "Export.zip" in response.headers["content-disposition"]
+    assert response.headers["x-export-filename"] == "Export.zip"
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        metadata = json.loads(archive.read("metadata.json"))
+    assert "ChatHistory/Query1_Response.docx" in names
+    assert "ChatHistory/Query2_Response.docx" in names
+    # The shared page lives under the first query that used it, only once.
+    confluence_files = [n for n in names if n.startswith("Confluence/")]
+    assert confluence_files == ["Confluence/Query1/Source 1.docx"]
+    assert metadata["query_count"] == 2
+    assert metadata["queries"][0]["user_query"] == "Q one"
+    assert metadata["queries"][1]["user_query"] == "Q two"
+    # Query2 still records it USED the page, pointing at Query1's single copy.
+    q2_page = next(s for s in metadata["queries"][1]["sources"] if s["source_type"] == "CONFLUENCE")
+    assert q2_page["referenced_from_earlier_query"] is True
+    assert q2_page["file"] == "Confluence/Query1/Source 1.docx"
+
+
+# ---------------------------------------------------------------------------
+# Sources-only export for one response: POST /api/knowledge-export/{id}/sources
+# ---------------------------------------------------------------------------
+
+
+def test_response_sources_export_downloads_only_that_responses_pages(client, db_session) -> None:
+    import json
+
+    session_id = "s-latest"
+    # Earlier answer with its own sources (index 1 -> CONFLUENCE "src-1").
+    _seed_exchange(db_session, session_id=session_id, user_text="Q one", assistant_text="A one", n_sources=2)
+    # Latest answer: 4 sources -> CONFLUENCE at odd indexes: src-1 and src-3.
+    latest = _seed_exchange(
+        db_session, session_id=session_id, user_text="Q two", assistant_text="A two", n_sources=4
+    )
+
+    response = client.post(f"/api/knowledge-export/{latest}/sources", headers={"X-Session-ID": session_id})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/zip")
+    # The seeded answer used two systems (uploads + Confluence) -> mixed name.
+    assert response.headers["x-export-filename"] == "Knowledge Export.zip"
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        metadata = json.loads(archive.read("metadata.json"))
+    # Only the LATEST response's sources (src-0..3), organised by system; no
+    # chat history and nothing from the earlier answer.
+    assert sorted(n for n in names if n.startswith("Confluence/")) == [
+        "Confluence/Source 1.docx",
+        "Confluence/Source 3.docx",
+    ]
+    assert sorted(n for n in names if n.startswith("UploadedDocuments/")) == [
+        "UploadedDocuments/Source 0.docx",
+        "UploadedDocuments/Source 2.docx",
+    ]
+    assert not any(n.startswith("ChatHistory/") for n in names)
+    assert metadata["chat_message_id"] == latest
+    assert metadata["scope"] == "single_response_sources"
+    assert metadata["source_types"] == ["CONFLUENCE", "UPLOADED_DOCUMENT"]
+
+
+def test_response_sources_falls_back_when_latest_answer_has_no_sources(client, db_session) -> None:
+    """Regression: POST /knowledge-export/{latest}/sources returned 404 after a
+    refresh when the newest answer had no retrieval context (e.g. message 82)."""
+    session_id = "s-refresh"
+    with_sources = _seed_exchange(
+        db_session, session_id=session_id, user_text="Netflix?", assistant_text="From Confluence", n_sources=2
+    )
+    # Newest answer: a general reply with NO export context.
+    latest_no_sources = _seed_exchange(
+        db_session, session_id=session_id, user_text="Thanks", assistant_text="You're welcome", with_sources=False
+    )
+
+    response = client.post(
+        f"/api/knowledge-export/{latest_no_sources}/sources", headers={"X-Session-ID": session_id}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-export-filename"] == "Knowledge Export.zip"
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        import json
+
+        metadata = json.loads(archive.read("metadata.json"))
+    # The export resolved to the newest answer that actually used sources.
+    assert metadata["chat_message_id"] == with_sources
+
+
+def test_latest_sources_route_exports_newest_exportable_answer(client, db_session) -> None:
+    session_id = "s-latest-route"
+    _seed_exchange(db_session, session_id=session_id, user_text="Q1", assistant_text="A1", n_sources=2)
+    newest = _seed_exchange(db_session, session_id=session_id, user_text="Q2", assistant_text="A2", n_sources=2)
+    _seed_exchange(db_session, session_id=session_id, user_text="bye", assistant_text="bye", with_sources=False)
+
+    response = client.post("/api/knowledge-export/latest/sources", headers={"X-Session-ID": session_id})
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        import json
+
+        metadata = json.loads(archive.read("metadata.json"))
+    assert metadata["chat_message_id"] == newest
+
+
+def test_latest_sources_route_404_with_clear_message_when_nothing_exportable(client, db_session) -> None:
+    session_id = "s-latest-empty"
+    _seed_exchange(db_session, session_id=session_id, assistant_text="general", with_sources=False)
+
+    response = client.post("/api/knowledge-export/latest/sources", headers={"X-Session-ID": session_id})
+
+    assert response.status_code == 404
+    assert "No source documents" in response.json()["message"]
+
+
+def test_response_sources_export_rejects_other_session(client, db_session) -> None:
+    message_id = _seed_exchange(db_session, session_id="owner-x", n_sources=2)
+    response = client.post(f"/api/knowledge-export/{message_id}/sources", headers={"X-Session-ID": "intruder"})
+    # The target is resolved within the caller's own session only, so another
+    # session's message is simply "not found" - its existence is never confirmed.
+    assert response.status_code == 404
+    assert "No source documents" in response.json()["message"]
+
+
+def test_session_export_is_scoped_to_the_requesting_session(client, db_session) -> None:
+    _seed_exchange(db_session, session_id="owner-s", n_sources=1)
+    # A different session with no history gets 404, never the owner's data.
+    response = client.post("/api/knowledge-export/session", headers={"X-Session-ID": "stranger-s"})
+    assert response.status_code == 404
+
+
 def test_knowledge_export_metadata(client, db_session) -> None:
     _seed_context_only(db_session, chat_message_id=200, session_id="s-meta")
     response = client.get("/api/knowledge-export/200", headers={"X-Session-ID": "s-meta"})

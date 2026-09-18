@@ -20,7 +20,7 @@ from app.core.database import Database
 from app.export.export_service import ExportService
 from app.export.intent import IntentRecommender
 from app.export.sources import ExportLimits, ExportServices
-from app.llm import MistralClient, build_report_llm_service
+from app.llm import MistralClient, build_rag_answer_service, build_report_llm_service
 from app.rag.document_parser import DocumentParser
 from app.rag.embedding_service import EmbeddingService
 from app.rag.rag_service import RagService
@@ -65,11 +65,15 @@ def _build_singletons() -> tuple[
     GitHubService | None,
     SharePointService | None,
     object | None,
+    object,
 ]:
     settings = get_settings()
     client = MistralClient.from_settings(settings)
     mistral_api_service = MistralApiService(client)
     mistral_service = MistralService(client)
+    # The final RAG *answer* LLM. Defaults to Mistral; switches to Azure OpenAI
+    # (e.g. the "luna" deployment) when RAG_LLM_PROVIDER=azure_openai is set.
+    rag_answer_service = build_rag_answer_service(settings, mistral_api_service)
     memory_service = ConversationMemoryService.from_settings(settings)
     translation_service = TranslationService(mistral_api_service)
     document_parser = DocumentParser()
@@ -110,6 +114,7 @@ def _build_singletons() -> tuple[
         github_service,
         sharepoint_service,
         semantic_kernel_factory,
+        rag_answer_service,
     )
 
 
@@ -128,6 +133,7 @@ def _build_singletons() -> tuple[
     _github_service,
     _sharepoint_service,
     _semantic_kernel_factory,
+    _rag_answer_service,
 ) = _build_singletons()
 
 
@@ -215,6 +221,7 @@ def get_rag_service(
         settings=_settings,
         document_repo=document_repo,
         document_file_repo=document_file_repo,
+        answer_service=_rag_answer_service,
     )
 
 
@@ -242,6 +249,7 @@ def get_chat_service(
 def get_export_service(
     export_repo: ExportContextRepository = Depends(get_export_context_repository),
     document_file_repo: DocumentFileRepository = Depends(get_document_file_repository),
+    chat_repo: ChatMessageRepository = Depends(get_chat_repository),
 ) -> Generator[ExportService, None, None]:
     services = ExportServices(
         document_file_repo=document_file_repo,
@@ -271,6 +279,7 @@ def get_export_service(
         recommender=recommender,
         synthesizer=synthesizer,
         limits=ExportLimits.from_settings(_settings),
+        chat_repo=chat_repo,
     )
     try:
         yield export_service

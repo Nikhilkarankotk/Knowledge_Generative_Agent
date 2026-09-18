@@ -107,6 +107,14 @@ class ChatService:
 
         self._memory_service.add_exchange(session_id, user_message, final_response)
         assistant = self._save_assistant_message(session_id, final_response)
+        promoted = capture.promote_relevant_candidates(user_message, final_response)
+        if promoted:
+            logger.info(
+                "Export capture: promoted %d Confluence search hit(s) referenced by the "
+                "answer to exportable: %s",
+                len(promoted),
+                promoted,
+            )
         self._commit_export_context(session_id, assistant.id, capture)
         return assistant
 
@@ -169,6 +177,7 @@ class ChatService:
 
         # 7. Save Assistant Response to DB
         assistant = self._save_assistant_message(session_id, final_response, user_lang_code=user_lang_code)
+        capture.promote_relevant_candidates(user_message, final_response)
         self._commit_export_context(session_id, assistant.id, capture)
         return assistant
 

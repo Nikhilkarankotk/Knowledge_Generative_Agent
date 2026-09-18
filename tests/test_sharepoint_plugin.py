@@ -111,6 +111,33 @@ def test_get_sharepoint_document_forwards_ids() -> None:
     assert stub.content_args == ("01onboard", "b!drive")
 
 
+def test_search_hits_are_candidates_and_only_a_read_document_is_exportable() -> None:
+    """A search returning several PDFs must not make them all exportable; only a
+    document the agent opens with get_sharepoint_document is a source by itself.
+    (Relevance promotion at end of turn handles the search-only case.)"""
+    from app.export.capture import RetrievalCapture
+
+    stub = StubSharePoint()
+    stub.search_result = (
+        "[Source: SharePoint: Job_Portal_Web_Application CICD Pipeline flow.pdf]\n"
+        "URL: https://sp/jp.pdf\nDrive id: d1\nDocument id: JP\nSize: 10 bytes\n\n"
+        "[Source: SharePoint: n8n CICD Pipeline flow.pdf]\n"
+        "URL: https://sp/n8n.pdf\nDrive id: d1\nDocument id: N8\nSize: 10 bytes"
+    )
+    capture = RetrievalCapture()
+    plugin = SharePointPlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    plugin.search_sharepoint("pipeline")
+    assert {i.source_id: i.exportable for i in capture.items} == {"JP": False, "N8": False}
+
+    stub.get_document_content = lambda document_id, drive_id: (  # type: ignore[method-assign]
+        "[Source: SharePoint: Job_Portal_Web_Application CICD Pipeline flow.pdf]\n"
+        "URL: https://sp/jp.pdf\nDrive id: d1\nDocument id: JP\nfull text"
+    )
+    plugin.get_sharepoint_document("JP", "d1")
+    assert {i.source_id: i.exportable for i in capture.items} == {"JP": True, "N8": False}
+
+
 def test_disabled_sharepoint_returns_marker() -> None:
     class DisabledStub(StubSharePoint):
         def __init__(self) -> None:

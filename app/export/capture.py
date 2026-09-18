@@ -117,6 +117,49 @@ class RetrievalCapture:
             else:
                 self._ranks.pop(key, None)
 
+    def promote_relevant_candidates(self, user_query: str, assistant_answer: str) -> list[str]:
+        """Mark search-only Confluence candidates as exportable when the answer
+        clearly relied on them.
+
+        ``search_pages`` hits are captured with ``exportable=False``; normally a
+        page only becomes exportable when the agent opens it with ``get_page``.
+        Some turns answer straight from the search results without opening any
+        page. In that case the page(s) whose *title* is echoed in the answer (or
+        matches the user's question) are the ones that grounded the response, so
+        they are promoted here. Unrelated hits stay non-exportable, which keeps
+        e.g. Netflix/Twitter pages out of an E-commerce export.
+
+        Returns the promoted source ids (empty when nothing changed).
+        """
+        with self._lock:
+            # Only the *subject* of the answer counts: its title/opening lines.
+            # A page merely mentioned in passing ("...unlike Netflix...") in the
+            # body must not be exported alongside the page the answer is about.
+            lead = _fold(_answer_lead(assistant_answer))
+            query = _fold(user_query)
+            promoted: list[str] = []
+            for source_type in _CANDIDATE_SOURCE_TYPES:
+                items = [item for item in self._items if item.source_type == source_type]
+                if not items or any(item.exportable for item in items):
+                    continue  # the agent read a specific document: nothing to infer
+                for item in items:
+                    title = _fold(_document_stem(item.source_name))
+                    if not title:
+                        continue
+                    terms = _title_terms(title)
+                    if not terms:
+                        continue
+                    in_lead = all(term in lead for term in terms)
+                    in_query = all(term in query for term in terms)
+                    # A document whose distinctive title words are *partly* in the
+                    # question (e.g. "job portal" from "Job_Portal_Web_Application
+                    # CICD Pipeline flow") is still about the asked application.
+                    subject_hit = _subject_terms_match(terms, query, lead)
+                    if in_lead or in_query or subject_hit:
+                        item.exportable = True
+                        promoted.append(item.source_id)
+            return promoted
+
     def _existing_for(self, source_type: str, source_id: str) -> ExportItemDraft | None:
         for item in self._items:
             if item.source_type == source_type and item.source_id == source_id:
@@ -140,6 +183,10 @@ class RetrievalCapture:
             existing.native_format = incoming.native_format
         if incoming.size_bytes is not None:
             existing.size_bytes = max(existing.size_bytes or 0, incoming.size_bytes)
+        # A page first seen as a search candidate (exportable=False) becomes a real
+        # source once the agent actually reads it (exportable=True). Never demote.
+        if incoming.exportable:
+            existing.exportable = True
         existing.metadata.update(incoming.metadata or {})
         incoming_rank = incoming.retrieval_rank
         existing_rank = existing.retrieval_rank
@@ -148,6 +195,79 @@ class RetrievalCapture:
         existing.merge_content(
             _extract_content_payload(incoming.content_reference) or ""
         )
+
+
+# Sources whose search hits are captured as candidates and only become exportable
+# when the agent reads them or the answer is clearly about them.
+_CANDIDATE_SOURCE_TYPES: tuple[str, ...] = ("CONFLUENCE", "SHAREPOINT")
+
+_GENERIC_TITLE_TERMS = {
+    "system", "design", "architecture", "architectural", "overview", "and", "the",
+    "application", "app", "page", "guide", "doc", "docs", "documentation", "notes",
+    # Document-type words common in SharePoint file names.
+    "web", "flow", "pipeline", "cicd", "ci", "cd", "process", "diagram", "document",
+    "file", "pdf", "docx", "pptx", "xlsx", "of", "for", "with", "in", "on", "to",
+}
+
+# Words that name a *kind* of document rather than *which* application it is
+# about. They never identify the subject on their own.
+_DOC_KIND_TERMS = {
+    "cicd", "ci", "cd", "pipeline", "flow", "deployment", "deploy", "workflow",
+    "architecture", "design", "system", "overview", "diagram", "process",
+}
+
+
+def _document_stem(name: str | None) -> str:
+    """File name without its extension (``Foo Bar.pdf`` -> ``Foo Bar``)."""
+    text = (name or "").strip()
+    if "." in text and len(text.rsplit(".", 1)[-1]) <= 5:
+        text = text.rsplit(".", 1)[0]
+    return text
+
+
+def _subject_terms_match(terms: list[str], query: str, lead: str) -> bool:
+    """True when the document's *subject* words (the application/product it is
+    about, i.e. title words that are not generic document-kind words) all appear
+    in the question or the answer's lead.
+
+    ``Job_Portal_Web_Application CICD Pipeline flow`` -> subject ``job portal``:
+    matches "CI/CD pipeline for the Job Portal web application", does NOT match
+    "n8n pipeline". Documents with no subject words never match this way.
+    """
+    subject = [term for term in terms if term not in _DOC_KIND_TERMS]
+    if not subject:
+        return False
+    return all(term in query for term in subject) or all(term in lead for term in subject)
+
+
+def _fold(value: str | None) -> str:
+    text = (value or "").casefold()
+    text = text.replace("-", " ").replace("_", " ")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", text)).strip()
+
+
+def _answer_lead(answer: str | None, *, max_chars: int = 400) -> str:
+    """The part of an answer that names its subject: the first heading/sentence.
+
+    Uses the first non-empty line plus whatever follows up to ``max_chars`` so a
+    title such as "**E-Commerce System Design ...**" is captured, while pages
+    only referenced deep in the body are not.
+    """
+    text = (answer or "").strip()
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first = lines[0] if lines else ""
+    return (first + " " + text[:max_chars])[: max_chars + len(first) + 1]
+
+
+def _title_terms(folded_title: str) -> list[str]:
+    """Distinctive words of a page title (drops boilerplate like 'System Design')."""
+    return [
+        term
+        for term in folded_title.split()
+        if len(term) > 2 and term not in _GENERIC_TITLE_TERMS
+    ]
 
 
 def _extract_content_payload(content_reference: str | None) -> str | None:
@@ -324,7 +444,13 @@ def parse_sharepoint_items(text: str) -> list[dict[str, Any]]:
         item: dict[str, Any] = {}
         for line in block.splitlines():
             if line.startswith("[Source: SharePoint:"):
-                item["name"] = line[len("[Source: SharePoint: "):].rstrip("]").strip()
+                name = line[len("[Source: SharePoint: "):].split("]", 1)[0].strip()
+                # "[Source: SharePoint: site <id>] - Search results ..." is the
+                # scoped-mode result header, not a document - never capture it.
+                if name.startswith("site "):
+                    item = {}
+                    break
+                item["name"] = name
             elif line.startswith("[Source: SharePoint]"):
                 continue
             elif line.startswith("URL: "):
