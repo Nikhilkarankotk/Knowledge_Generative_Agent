@@ -55,6 +55,12 @@ body {
   display: flex;
 }
 
+app-root {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+
 /* Scrollbar Styling */
 ::-webkit-scrollbar {
   width: 8px;
