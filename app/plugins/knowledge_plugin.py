@@ -13,6 +13,8 @@ import logging
 
 from semantic_kernel.functions import kernel_function
 
+from app.export.capture import ExportItemDraft, RetrievalCapture, parse_rag_context
+from app.export.formats import SourceType
 from app.rag.rag_service import RagService
 
 # The @kernel_function decorator below runs signature introspection at class-definition
@@ -36,11 +38,17 @@ SEARCH_KNOWLEDGE_DESCRIPTION = (
 class KnowledgePlugin:
     """Search the session's uploaded documents via the existing RAG pipeline."""
 
-    def __init__(self, rag_service: RagService, session_id: str) -> None:
+    def __init__(
+        self,
+        rag_service: RagService,
+        session_id: str,
+        capture: RetrievalCapture | None = None,
+    ) -> None:
         if rag_service is None:
             raise ValueError("rag_service is required for the KnowledgePlugin")
         self._rag_service = rag_service
         self._session_id = session_id
+        self._capture = capture
 
     @kernel_function(description=SEARCH_KNOWLEDGE_DESCRIPTION, name="search_knowledge")
     def search_knowledge(self, query: str) -> str:
@@ -64,8 +72,31 @@ class KnowledgePlugin:
         if not context:
             logger.info("KnowledgePlugin search_knowledge completed: no relevant documents")
             return "No relevant documents found in the uploaded knowledge base for this query."
+        _capture_rag_sources(self._capture, context)
         logger.info(
             "KnowledgePlugin search_knowledge completed: %d sources returned",
             context.count("[Source"),
         )
         return context
+
+
+def _capture_rag_sources(capture: RetrievalCapture | None, context: str) -> None:
+    """Persist the retrieved document sources into the turn's export capture."""
+    if capture is None or not context or "[Source" not in context:
+        return
+    for filename, body in parse_rag_context(context):
+        draft = ExportItemDraft(
+            source_type=SourceType.UPLOADED_DOCUMENT.value,
+            source_id=filename,
+            source_name=filename,
+            filename=filename,
+            native_format=_extension_of(filename),
+        )
+        draft.merge_content(body)
+        capture.add(draft)
+
+
+def _extension_of(filename: str) -> str | None:
+    if not filename or "." not in filename:
+        return None
+    return filename.rsplit(".", 1)[-1].lower().strip(".") or None

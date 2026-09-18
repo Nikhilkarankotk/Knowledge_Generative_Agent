@@ -52,6 +52,31 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 500
     rag_top_k: int = 5
 
+    # --- Export (source-aware, context-grounded export service) ---
+    # Depot limits for export output. The ExportService validates the proposed
+    # export (native files, generated documents, archives) against these.
+    export_max_files: int = 100
+    export_max_total_size_mb: int = 100
+    export_max_single_file_size_mb: int = 25
+    export_max_generated_report_size_mb: int = 10
+    export_max_github_source_size_mb: int = 25
+    # Contexts older than this (in days) can no longer be exported.
+    export_context_ttl_days: int = 30
+    # When true, ZIP/manifest exports also include a copy of the assistant's
+    # answer (export-summary.md). Optional per the export specification.
+    export_include_summary: bool = True
+    # When true, the ExportService may ask the LLM for a recommended export
+    # intent (format/type) that is then validated against the retrieved sources
+    # and the available exporters before it is executed. A validated
+    # deterministic proposal is always used as the fallback.
+    export_intent_recommendation_enabled: bool = True
+    export_intent_recommendation_timeout_seconds: float = 15.0
+    # When true, generated exports (GitHub reports and Confluence/SharePoint/upload
+    # documents) include an LLM-written narrative (functionality/architecture/tech
+    # stack for repositories; an elaborated overview for documents) that is grounded
+    # in the retrieved evidence. A deterministic evidence section always remains.
+    export_report_synthesis_enabled: bool = True
+
     # --- Conversation memory ---
     conversation_max_history: int = 10
 
@@ -75,6 +100,9 @@ class Settings(BaseSettings):
     confluence_limit: int = 5
     confluence_timeout_seconds: float = 15.0
     confluence_page_char_limit: int = 15000
+    # Whether Confluence searches also include drafts. Off by default: drafts are
+    # usually not the authoritative source an agent should answer from.
+    confluence_include_drafts: bool = False
 
     # --- GitHub (GitHubPlugin, Phase 2) ---
     # Disabled by default: plugins return "not configured" markers when off. The
@@ -90,6 +118,29 @@ class Settings(BaseSettings):
     # repository/code search is disabled. Leave empty to disable GitHub repository
     # access entirely (the agent answers "No GitHub repositories are configured").
     github_allowed_repositories: str = ""
+
+    # --- GitHub report analysis LLM (OpenRouter, Phase 2) ---
+    # Optional *separate* LLM provider used to write the GitHub repository analysis
+    # narrative (ReportSynthesizer). Leave GITHUB_LLM_PROVIDER empty or set it to
+    # "mistral" to keep using the Mistral synthesis client; set it to "openrouter"
+    # to route GitHub report synthesis through OpenRouter (an OpenAI-compatible
+    # endpoint). This only affects the generated report narrative - chat, RAG and
+    # embeddings always keep using the Mistral client above.
+    # OPENROUTER_* mirror the OpenAI-compatible OpenRouter API.
+    github_llm_provider: str = ""
+    github_llm_model: str = "openrouter/free"
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_timeout_seconds: float = 60.0
+    openrouter_retries: int = 2
+    # Bounds for the repository analysis that feeds the report narrative.
+    # Analysis is a deep, asynchronous operation: breadth is preferred over
+    # latency. This is a high safety ceiling; the byte budget governs how much
+    # is actually read.
+    github_analysis_max_files: int = 300
+    github_analysis_max_context_chars: int = 60000
+    github_analysis_max_tokens: int = 3000
+    github_analysis_temperature: float = 0.1
 
     # --- SharePoint Online (SharePointPlugin, Phase 3) ---
     # Disabled by default: plugins return "not configured" markers when off. The

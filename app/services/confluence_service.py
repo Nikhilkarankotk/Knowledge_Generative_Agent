@@ -84,6 +84,7 @@ class ConfluenceService:
         limit: int = 5,
         timeout_seconds: float = 15.0,
         page_char_limit: int = 15000,
+        include_drafts: bool = False,
         client: httpx.Client | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -92,6 +93,7 @@ class ConfluenceService:
         self._limit = max(1, limit)
         self._timeout_seconds = timeout_seconds
         self._page_char_limit = max(500, page_char_limit)
+        self._include_drafts = include_drafts
         if client is not None:
             self._client = client
         else:
@@ -120,6 +122,7 @@ class ConfluenceService:
             limit=settings.confluence_limit,
             timeout_seconds=settings.confluence_timeout_seconds,
             page_char_limit=settings.confluence_page_char_limit,
+            include_drafts=getattr(settings, "confluence_include_drafts", False),
         )
 
     @property
@@ -135,12 +138,17 @@ class ConfluenceService:
     # -- request helpers --------------------------------------------------------
 
     def _get_json(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        debug_params = params or {}
+        logger.debug("Confluence HTTP request: GET %s params=%r", path, debug_params)
         try:
             response = self._client.get(path, params=params)
         except httpx.TimeoutException as exc:
+            logger.debug("Confluence HTTP response: GET %s status=TIMEOUT", path)
             raise ConfluenceApiError(f"Confluence request to {path} timed out.") from exc
         except httpx.HTTPError as exc:
+            logger.debug("Confluence HTTP response: GET %s status=ERROR %s", path, exc)
             raise ConfluenceApiError(f"Confluence request to {path} failed: {exc}") from exc
+        logger.debug("Confluence HTTP response: GET %s status=%d", path, response.status_code)
         if response.status_code in (401, 403):
             raise ConfluenceApiError("Confluence authentication failed (HTTP 401/403).")
         if response.status_code == 404:
@@ -167,10 +175,23 @@ class ConfluenceService:
             params={
                 "cql": cql,
                 "limit": max(1, limit),
-                "expand": "version,space,excerpt",
+                "expand": "version,space,excerpt,ancestors",
             },
         )
-        return [item for item in payload.get("results", []) if isinstance(item, dict)]
+        results = [item for item in payload.get("results", []) if isinstance(item, dict)]
+        titles = [item.get("title") for item in results]
+        ids = [item.get("id") for item in results]
+        parents = [
+            (item.get("ancestors") or [])[-1].get("title")
+            if item.get("ancestors")
+            else None
+            for item in results
+        ]
+        logger.debug(
+            "Confluence search results: cql=%r count=%d titles=%r ids=%r parent_titles=%r",
+            cql, len(results), titles, ids, parents,
+        )
+        return results
 
     # -- public API -------------------------------------------------------------
 
@@ -182,12 +203,20 @@ class ConfluenceService:
     ) -> str:
         """CQL text search over Confluence pages; returns an attributed text block.
 
-        The primary CQL matches the query as a phrase. If that returns fewer pages
-        than requested, the search automatically broadens to per-keyword OR terms
-        (stop words dropped, up to 4 keywords) matching both body text and page
-        titles, and merges/dedupes the results so phrase matches rank first --
-        important when a wiki holds hundreds of pages. When ``space_key`` is given
-        the search is scoped to that single space.
+        The search is progressive and hierarchy-aware:
+
+        1. Title phrase match (highest precision).
+        2. Body text phrase match.
+        3. Per-keyword OR broaden (titles + body).
+        4. Anchor/parent resolution: detects an application anchor (e.g.
+           "Payments application") from the query, resolves it by title, and
+           searches its descendant pages via ``ancestor`` -- the key mechanism
+           that finds nested pages like "API Documentation" under "Payments
+           Application".
+
+        Results are deduplicated by page id, capped at ``limit``, and ranked so
+        title-matches appear before keyword-or matches. When ``space_key`` is
+        given the search is scoped to that single space.
         """
         query = (query or "").strip()
         if not query:
@@ -198,23 +227,84 @@ class ConfluenceService:
         if space_key:
             scope = f' AND space = "{_escape_cql(space_key)}"'
 
-        base_cql = f"type = page{scope}"
-        phrase_cql = f'{base_cql} AND text ~ "{_escape_cql(query)}"'
-        results = self._run_search(phrase_cql, limit_n * 3)
-
+        if self._include_drafts:
+            type_cql = "(type = page OR type = draft)"
+        else:
+            type_cql = "type = page"
+        base_cql = f"{type_cql}{scope}"
         keywords = _extract_keywords(query)
-        if len(results) < limit_n and len(keywords) >= 2:
+
+        logger.debug(
+            "Confluence search: user_query=%r normalized_query=%r keywords=%r "
+            "limit=%d space_key=%r include_drafts=%s",
+            query, re.sub(r"\s+", " ", query).strip(), keywords, limit_n,
+            space_key, self._include_drafts,
+        )
+
+        ranked: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def absorb(pages: list[dict[str, Any]]) -> None:
+            for item in pages:
+                item_id = str(item.get("id") or "")
+                if not item_id or item_id in seen:
+                    continue
+                seen.add(item_id)
+                ranked.append(item)
+
+        # 1) Title phrase (highest precision).
+        absorb(self._run_search(f'{base_cql} AND title ~ "{_escape_cql(query)}"', limit_n * 2))
+        if len(ranked) >= limit_n:
+            return self._render_search_results(ranked[:limit_n], query)
+
+        # 2) Body text phrase -- only when multi-keyword, or when title got nothing.
+        if len(keywords) >= 2 or not ranked:
+            absorb(self._run_search(f'{base_cql} AND text ~ "{_escape_cql(query)}"', limit_n * 2))
+            if len(ranked) >= limit_n:
+                return self._render_search_results(ranked[:limit_n], query)
+
+        # 3) Hierarchy-aware: resolve an anchor page (e.g. "Payments application")
+        #    by title, and search its descendants -- the fix for nested pages that
+        #    flat keyword-or truncates out of the top N.
+        if len(ranked) < limit_n:
+            anchor, topic = _split_anchor_and_topic(query, keywords)
+            if not anchor and len(keywords) >= 2:
+                anchor, topic = keywords[0], " ".join(keywords[1:])
+            if anchor:
+                parent_pages = self._run_search(
+                    f'{base_cql} AND title ~ "{_escape_cql(anchor)}"',
+                    min(5, limit_n + 2),
+                )
+                for parent in parent_pages[:2]:
+                    pid = str(parent.get("id") or "")
+                    if not pid:
+                        continue
+                    absorb([parent])
+                    if len(ranked) >= limit_n:
+                        break
+                    if topic:
+                        child_cql = (
+                            f'{base_cql} AND ancestor = "{pid}" AND '
+                            f'(title ~ "{_escape_cql(topic)}" OR text ~ "{_escape_cql(topic)}")'
+                        )
+                    else:
+                        child_cql = f'{base_cql} AND ancestor = "{pid}"'
+                    absorb(self._run_search(child_cql, limit_n * 2))
+                    if len(ranked) >= limit_n:
+                        break
+
+        # 4) Per-keyword OR broaden (last-resort broad).
+        if len(ranked) < limit_n and len(keywords) >= 2:
             term_cql = base_cql + " AND (" + " OR ".join(
                 f'text ~ "{_escape_cql(word)}" OR title ~ "{_escape_cql(word)}"'
                 for word in keywords
             ) + ")"
-            broad = self._run_search(term_cql, limit_n * 2)
-            results = _dedupe_results(results + broad)
+            absorb(self._run_search(term_cql, limit_n * 3))
 
-        results = results[:limit_n]
-        if not results:
+        ranked = ranked[:limit_n]
+        if not ranked:
             return "No Confluence pages found matching the query."
-        return "\n\n".join(self._format_search_result(item) for item in results)
+        return self._render_search_results(ranked, query)
 
     def list_spaces(self, limit: int = 50) -> str:
         """List the Confluence spaces accessible to the agent (key + name)."""
@@ -261,9 +351,25 @@ class ConfluenceService:
         excerpt = str(item.get("excerpt") or "").strip() or str(item.get("summary") or "").strip()
         header = f"[Source: Confluence: {title}]" + (f" (space: {space})" if space else "")
         lines = [header, f"Page id: {page_id}", f"URL: {url}"]
+        ancestors = item.get("ancestors") or []
+        if isinstance(ancestors, list) and ancestors:
+            direct_parent = ancestors[-1]
+            parent_title = str(direct_parent.get("title") or "")
+            if parent_title:
+                lines.append(f"Parent: {parent_title}")
         if excerpt:
             lines.append(f"Excerpt: {_cap(excerpt, 500)}")
         return "\n".join(lines)
+
+    def _render_search_results(self, ranked: list[dict[str, Any]], query: str) -> str:
+        logger.debug(
+            "Confluence search done: query=%r returning=%d titles=%r ids=%r",
+            query,
+            len(ranked),
+            [item.get("title") for item in ranked],
+            [item.get("id") for item in ranked],
+        )
+        return "\n\n".join(self._format_search_result(item) for item in ranked)
 
 
 def _basic_auth_header(username: str, password: str) -> str:
@@ -317,3 +423,27 @@ def _dedupe_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _cap(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+_APP_NOUN_RE = re.compile(
+    r"(?P<name>[A-Za-z][A-Za-z0-9]*(?:[\s'-][A-Za-z0-9]+)*)\s+"
+    r"(?P<noun>application|app|service|services|platform|system|portal)s?\b",
+    re.IGNORECASE,
+)
+
+
+def _split_anchor_and_topic(query: str, keywords: list[str]) -> tuple[str | None, str | None]:
+    """Detect an anchor page concept (e.g. "Payments application") in the query.
+
+    Returns ``(anchor_title, topic)`` or ``(None, None)`` when no application-like
+    noun phrase is detected.
+    """
+    match = _APP_NOUN_RE.search(query)
+    if match:
+        anchor = f"{match.group('name').strip()} {match.group('noun').strip()}"
+        noun_kw = match.group("noun").lower()
+        anchor_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9]+", match.group("name"))}
+        anchor_tokens.add(noun_kw)
+        topic_words = [kw for kw in keywords if kw not in anchor_tokens]
+        return anchor, (" ".join(topic_words) if topic_words else None)
+    return None, None

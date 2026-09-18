@@ -121,3 +121,30 @@ def test_search_pages_logs_invocation_and_result_count(caplog) -> None:
     messages = [record.getMessage() for record in caplog.records]
     assert any("search_pages invoked: query='billing' space_key='PAY' limit=3" in msg for msg in messages)
     assert any("completed: 1 results returned" in msg for msg in messages)
+
+
+def test_search_pages_capture_includes_space_and_parent() -> None:
+    from app.export.capture import RetrievalCapture
+
+    stub = StubConfluence()
+    stub.search_result = (
+        "[Source: Confluence: API Documentation (space: PAY)]\n"
+        "Page id: DOC1\n"
+        "URL: https://wiki.example.com/spaces/PAY/pages/DOC1\n"
+        "Parent: Payments Application\n"
+        "Excerpt: REST endpoint reference"
+    )
+    capture = RetrievalCapture()
+    plugin = ConfluencePlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    plugin.search_pages("Payments application API documentation")
+
+    assert capture.items
+    item = capture.items[0]
+    assert item.source_type == "CONFLUENCE"
+    assert item.source_id == "DOC1"
+    assert item.source_name == "API Documentation"
+    assert item.source_url == "https://wiki.example.com/spaces/PAY/pages/DOC1"
+    assert item.metadata.get("space") == "PAY"
+    assert item.metadata.get("parent") == "Payments Application"
+    assert "REST endpoint reference" in (item.content_reference or "")

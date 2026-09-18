@@ -29,9 +29,9 @@ ALLOWED = ["acme/payments", "a/b", "eng/store"]
 def make_service(handler, **kwargs) -> GitHubService:
     client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
     kwargs.setdefault("allowed_repositories", ALLOWED)
+    kwargs.setdefault("api_token", "secret-token")
     return GitHubService(
         base_url=BASE_URL,
-        api_token="secret-token",
         client=client,
         **kwargs,
     )
@@ -300,6 +300,84 @@ def test_list_repository_contents_with_path() -> None:
     assert captured[0].endswith("/repos/a/b/contents/src/services")
 
 
+def test_walk_repository_via_single_recursive_tree() -> None:
+    """The recursive git-trees endpoint replaces the per-directory contents walk."""
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.url.path)
+        if request.url.path == "/repos/a/b":
+            return httpx.Response(200, json={"default_branch": "main"})
+        assert request.url.path == "/repos/a/b/git/trees/main"
+        assert parse_qs(request.url.query.decode() or "").get("recursive") == ["1"]
+        return httpx.Response(
+            200,
+            json={
+                "sha": "x",
+                "truncated": False,
+                "tree": [
+                    {"path": "src", "type": "tree"},
+                    {"path": "src/app.py", "type": "blob"},
+                    {"path": "src/tests/test_x.py", "type": "blob"},
+                    {"path": "README.md", "type": "blob"},
+                ],
+            },
+        )
+
+    service = make_service(handler)
+    output = service.walk_repository("a/b")
+
+    assert output == [
+        {"path": "src", "type": "dir"},
+        {"path": "src/app.py", "type": "file"},
+        {"path": "src/tests/test_x.py", "type": "file"},
+        {"path": "README.md", "type": "file"},
+    ]
+    assert captured == ["/repos/a/b", "/repos/a/b/git/trees/main"]
+
+
+def test_walk_repository_falls_back_and_skips_noise_dirs() -> None:
+    """Truncated trees fall back to the contents walk without descending into noise."""
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.url.path)
+        if request.url.path == "/repos/a/b":
+            return httpx.Response(200, json={"default_branch": "main"})
+        if request.url.path.endswith("/git/trees/main"):
+            return httpx.Response(200, json={"sha": "x", "truncated": True, "tree": []})
+        if request.url.path == "/repos/a/b/contents":
+            return httpx.Response(
+                200,
+                json=[
+                    {"name": "target", "type": "dir", "path": "target"},
+                    {"name": "src", "type": "dir", "path": "src"},
+                ],
+            )
+        if request.url.path == "/repos/a/b/contents/src":
+            return httpx.Response(
+                200,
+                json=[
+                    {"name": "node_modules", "type": "dir", "path": "src/node_modules"},
+                    {"name": "app.py", "type": "file", "path": "src/app.py"},
+                ],
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    service = make_service(handler)
+    output = service.walk_repository("a/b", skip_dirs=("target", "node_modules"))
+
+    assert output == [
+        {"path": "target", "type": "dir"},
+        {"path": "src", "type": "dir"},
+        {"path": "src/node_modules", "type": "dir"},
+        {"path": "src/app.py", "type": "file"},
+    ]
+    # noise dirs recorded but never descended into
+    assert "/repos/a/b/contents/target" not in captured
+    assert "/repos/a/b/contents/src/node_modules" not in captured
+
+
 def test_get_file_content_decodes_and_capped() -> None:
     body = base64.b64encode(b"def charge():\n    pass").decode()
 
@@ -343,6 +421,120 @@ def test_get_issue_formats_attributed() -> None:
     assert "Reproduce by ..." in output
 
 
+# -- repository contents retrieval -------------------------------------------
+
+
+def _retrieval_handler(
+    files: dict[str, str], *, tree_ok: bool = True
+):
+    """Mock GitHub for retrieve_repository_contents (meta + tree + contents)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = request.url.path
+        if url.endswith("/repos/acme/payments"):
+            return httpx.Response(200, json=_repo_item("acme/payments"))
+        if "git/trees" in url:
+            if not tree_ok:
+                return httpx.Response(500, text="boom")
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {"type": "blob", "path": path, "size": len(content)}
+                        for path, content in files.items()
+                    ],
+                },
+            )
+        if "/contents" in url:
+            path = url.split("/contents", 1)[1].strip("/")
+            if path in files:
+                return httpx.Response(
+                    200,
+                    json={"content": base64.b64encode(files[path].encode()).decode()},
+                )
+            prefix = path + "/" if path else ""
+            items: list[dict] = []
+            seen: set[str] = set()
+            for file_path in files:
+                if not file_path.startswith(prefix):
+                    continue
+                rest = file_path[len(prefix):]
+                if not rest:
+                    continue
+                top = rest.split("/")[0]
+                if top in seen:
+                    continue
+                seen.add(top)
+                entry_path = prefix + top
+                items.append(
+                    {"path": entry_path, "type": "dir" if "/" in rest else "file"}
+                )
+            if items or not path:
+                return httpx.Response(200, json=items)
+            return httpx.Response(404, json={})
+        raise AssertionError(f"unexpected mocked path: {url}")
+
+    return handler
+
+
+def test_retrieve_repository_contents_reads_priority_files_and_skips_binary() -> None:
+    files = {
+        "README.md": "# Payments\nPayments platform.",
+        "package.json": '{"name": "payments-app"}',
+        "src/main.py": "import fastapi\napp = FastAPI()\n",
+        "assets/logo.png": "PNGDATA",
+    }
+    service = make_service(_retrieval_handler(files))
+    output = service.retrieve_repository_contents("acme/payments")
+
+    assert output.startswith("[Source: GitHub: acme/payments]")
+    assert "### README.md" in output
+    assert "### package.json" in output
+    assert "### src/main.py" in output
+    assert "logo.png" not in output  # binary extension is never sampled
+    assert "# Payments" in output
+    assert output.index("### README.md") < output.index("### package.json")
+    assert output.index("### package.json") < output.index("### src/main.py")
+
+
+def test_retrieve_repository_contents_caps_characters() -> None:
+    files = {
+        f"src/module_{index}.py": f"def fn_{index}():\n    pass\n" * 100
+        for index in range(8)
+    }
+    service = make_service(_retrieval_handler(files))
+    output = service.retrieve_repository_contents("acme/payments", max_chars=1_500)
+
+    import re
+
+    sampled = int(re.search(r"(\d+) characters sampled", output).group(1))  # type: ignore[union-attr]
+    assert sampled <= 1_500
+    assert "more file(s) left unsampled" in output
+
+
+def test_retrieve_repository_contents_rejects_unallowed_repo_before_network() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unallowed repo must not reach the API: {request.url}")
+
+    service = make_service(handler, allowed_repositories=["engine/store"])
+    with pytest.raises(GitHubRepositoryNotAllowedError, match="allowlist"):
+        service.retrieve_repository_contents("acme/payments")
+
+
+def test_retrieve_repository_contents_walks_without_tree_endpoint() -> None:
+    files = {
+        "README.md": "# Walk",
+        "src/main.py": "print('main')",
+    }
+    service = make_service(_retrieval_handler(files, tree_ok=False))
+    output = service.retrieve_repository_contents("acme/payments")
+
+    assert "### README.md" in output
+    assert "### src/main.py" in output
+    assert "walk" in output.lower()
+
+
 # -- transport/error mapping -----------------------------------------------------
 
 
@@ -369,14 +561,77 @@ def test_bearer_auth_header_sent() -> None:
         (403, "authentication failed"),
     ],
 )
-def test_auth_errors_map_to_github_api_error(status: int, message: str) -> None:
+def test_auth_errors_map_to_github_api_error_after_anonymous_fallback(
+    status: int, message: str
+) -> None:
+    auth_headers: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["Authorization"] == "Bearer secret-token"
+        auth_headers.append(request.headers.get("Authorization", ""))
         return httpx.Response(status, json={"message": "nope"})
 
     service = make_service(handler)
     with pytest.raises(GitHubApiError, match=message):
         service.get_repository("acme/payments")
+
+    # The authenticated attempt failed and the anonymous fallback also failed:
+    # a controlled error, never a leaked token or a fabricated answer.
+    assert auth_headers == ["Bearer secret-token", ""]
+
+
+def test_bad_token_falls_back_to_anonymous_and_reads_public_repo() -> None:
+    auth_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth_headers.append(request.headers.get("Authorization", ""))
+        if "Bearer" in request.headers.get("Authorization", ""):
+            return httpx.Response(401, json={"message": "Bad credentials"})
+        return httpx.Response(200, json={"content": base64.b64encode(b"# payments").decode()})
+
+    service = make_service(handler)
+    output = service.get_readme("acme/payments")
+
+    assert "# payments" in output
+    # First call authenticated (rejected), second call anonymous (public fallback).
+    assert auth_headers == ["Bearer secret-token", ""]
+
+
+def test_private_repo_after_fallback_reports_not_found() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "Bearer" in request.headers.get("Authorization", ""):
+            return httpx.Response(401, json={"message": "Bad credentials"})
+        return httpx.Response(404, json={})
+
+    service = make_service(handler)
+    with pytest.raises(GitHubApiError, match="not found"):
+        service.get_readme("acme/payments")
+
+
+def test_rate_limit_never_triggers_anonymous_fallback() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("Authorization", ""))
+        return httpx.Response(403, headers={"x-ratelimit-remaining": "0"}, json={})
+
+    service = make_service(handler)
+    with pytest.raises(GitHubApiError, match="rate limit"):
+        service.search_code("acme/payments", "x")
+    assert len(calls) == 1  # one authenticated attempt, no anonymous retry
+
+
+def test_no_token_never_sends_auth_or_anonymous_retry() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("Authorization", ""))
+        return httpx.Response(401, json={})
+
+    service = make_service(handler, api_token="")
+    with pytest.raises(GitHubApiError, match="authentication failed"):
+        service.get_repository("acme/payments")
+    assert len(calls) == 1
+    assert calls == [""]
 
 
 def test_rate_limit_error_maps_to_github_api_error() -> None:

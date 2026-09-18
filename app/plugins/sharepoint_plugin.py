@@ -22,6 +22,8 @@ import logging
 from semantic_kernel.functions import kernel_function
 
 from app.core.exceptions import SharePointApiError
+from app.export.capture import ExportItemDraft, RetrievalCapture, parse_sharepoint_items
+from app.export.formats import SourceType
 from app.services.sharepoint_service import SharePointService
 
 # The @kernel_function decorator below runs signature introspection at class-definition
@@ -88,8 +90,13 @@ GET_SHAREPOINT_DOCUMENT_DESCRIPTION = (
 class SharePointPlugin:
     """Read-only SharePoint knowledge limited to the configured site + folder."""
 
-    def __init__(self, sharepoint_service: SharePointService | None) -> None:
+    def __init__(
+        self,
+        sharepoint_service: SharePointService | None,
+        capture: RetrievalCapture | None = None,
+    ) -> None:
         self._service = sharepoint_service
+        self._capture = capture
 
     @kernel_function(
         description=LIST_SHAREPOINT_DOCUMENTS_DESCRIPTION,
@@ -108,6 +115,7 @@ class SharePointPlugin:
         )
         try:
             result = self._service.list_files(limit=limit)  # type: ignore[union-attr]
+            _capture_sharepoint_results(self._capture, result)
             logger.info("SharePoint list_sharepoint_documents completed")
             return result
         except SharePointApiError as exc:
@@ -145,6 +153,7 @@ class SharePointPlugin:
                 query=query,
                 limit=limit,
             )
+            _capture_sharepoint_results(self._capture, result)
             logger.info(
                 "SharePoint search_sharepoint completed: %d results returned",
                 _count_sources(result),
@@ -182,6 +191,7 @@ class SharePointPlugin:
                 query=query,
                 limit=limit,
             )
+            _capture_sharepoint_results(self._capture, result)
             logger.info(
                 "SharePoint search_sharepoint_content completed: %d sources returned",
                 _count_sources(result),
@@ -219,6 +229,7 @@ class SharePointPlugin:
                 document_id=document_id,
                 drive_id=drive_id,
             )
+            _capture_sharepoint_results(self._capture, result)
             logger.info("SharePoint get_sharepoint_document completed")
             return result
         except SharePointApiError as exc:
@@ -233,6 +244,36 @@ class SharePointPlugin:
     @property
     def _enabled(self) -> bool:
         return self._service is not None and self._service.enabled
+
+
+def _capture_sharepoint_results(capture: RetrievalCapture | None, result: str) -> None:
+    """Persist each returned SharePoint document into the turn's export capture."""
+    if capture is None:
+        return
+    for item in parse_sharepoint_items(result):
+        if str(item.get("type") or "").lower() == "folder":
+            continue
+        document_id = item.get("document_id") or item.get("name")
+        if not document_id:
+            continue
+        metadata = {
+            key: item[key]
+            for key in ("drive_id", "site_id", "size", "modified", "created", "parent", "type")
+            if item.get(key) is not None
+        }
+        draft = ExportItemDraft(
+            source_type=SourceType.SHAREPOINT.value,
+            source_id=str(document_id),
+            source_name=str(item.get("name") or document_id),
+            filename=str(item.get("name") or "") or None,
+            mime_type=item.get("mime_type"),
+            source_url=item.get("url"),
+            metadata=metadata or {},
+            size_bytes=int(item["size"]) if isinstance(item.get("size"), (int, str)) and str(item.get("size")).isdigit() else None,
+        )
+        if item.get("content"):
+            draft.merge_content(str(item["content"]))
+        capture.add(draft)
 
 
 def _count_sources(text: str) -> int:

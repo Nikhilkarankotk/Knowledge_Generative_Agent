@@ -16,12 +16,17 @@ Two paths:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from app.models import ChatMessage
+from app.export.capture import ExportItemDraft, RetrievalCapture, parse_rag_context
+from app.models import ChatMessage, ExportContextItem
 from app.rag.rag_service import RagService
-from app.repositories import ChatMessageRepository
+from app.repositories import (
+    ChatMessageRepository,
+    DocumentFileRepository,
+    ExportContextRepository,
+)
 from app.services.confluence_service import ConfluenceService
 from app.services.conversation_memory_service import ConversationMemoryService
 from app.services.mistral_api_service import MistralApiService
@@ -29,6 +34,8 @@ from app.services.translation_service import TranslationService
 from app.sk.chat_history_builder import build_agent_chat_history
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_EXPORT_CONTEXT_TTL_DAYS = 30
 
 
 class ChatService:
@@ -42,6 +49,9 @@ class ChatService:
         semantic_kernel_factory: Any = None,
         confluence_service: ConfluenceService | None = None,
         max_history: int | None = None,
+        export_repo: ExportContextRepository | None = None,
+        document_file_repo: DocumentFileRepository | None = None,
+        settings: Any | None = None,
     ) -> None:
         self._chat_repo = chat_repo
         self._mistral_service = mistral_service
@@ -54,6 +64,9 @@ class ChatService:
         self._confluence_service = confluence_service
         # Number of messages fed as runtime history to the agent (user+assistant rows).
         self._max_history = max_history if max_history else 20
+        self._export_repo = export_repo
+        self._document_file_repo = document_file_repo
+        self._settings = settings
 
     # -- Turn processing ----------------------------------------------------------
 
@@ -82,15 +95,19 @@ class ChatService:
             current_user_message=user_message,
             max_messages=self._max_history,
         )
+        capture = RetrievalCapture()
         agent = self._semantic_kernel_factory.build_agent(
             rag_service=self._rag_service,
             session_id=session_id,
             confluence_service=self._confluence_service,
+            capture=capture,
         )
         final_response = self._semantic_kernel_factory.run_agent(agent, history)
 
         self._memory_service.add_exchange(session_id, user_message, final_response)
-        return self._save_assistant_message(session_id, final_response)
+        assistant = self._save_assistant_message(session_id, final_response)
+        self._commit_export_context(session_id, assistant.id, capture)
+        return assistant
 
     # -- Legacy augmented-prompt path ---------------------------------------------
 
@@ -100,6 +117,8 @@ class ChatService:
 
         # 2. Retrieve Knowledge Context (RAG)
         knowledge_context = self._rag_service.retrieve_context(user_message, session_id)
+        capture = RetrievalCapture()
+        _capture_rag_context(capture, knowledge_context)
 
         # 3. Retrieve Conversation History (Memory)
         history = self._memory_service.get_context(session_id)
@@ -148,7 +167,9 @@ class ChatService:
         self._memory_service.add_exchange(session_id, user_message, final_response)
 
         # 7. Save Assistant Response to DB
-        return self._save_assistant_message(session_id, final_response, user_lang_code=user_lang_code)
+        assistant = self._save_assistant_message(session_id, final_response, user_lang_code=user_lang_code)
+        self._commit_export_context(session_id, assistant.id, capture)
+        return assistant
 
     def _save_assistant_message(
         self, session_id: str, response: str, *, user_lang_code: str = "en"
@@ -162,6 +183,51 @@ class ChatService:
             timestamp=datetime.now(),
         )
         return self._chat_repo.save(ai_msg)
+
+    def _commit_export_context(
+        self, session_id: str, chat_message_id: int, capture: RetrievalCapture
+    ) -> None:
+        """Persist the turn's retrieved artifacts against the assistant message."""
+        if self._export_repo is None:
+            return
+        items = capture.items
+        if not items:
+            return
+        ttl_days = _DEFAULT_EXPORT_CONTEXT_TTL_DAYS
+        if self._settings is not None:
+            ttl_days = getattr(self._settings, "export_context_ttl_days", ttl_days)
+        context = ExportContextRepository.create_context(chat_message_id, session_id)
+        context.expires_at = datetime.now() + timedelta(days=ttl_days)
+        context.source_count = len(items)
+        self._export_repo.save(context)
+        rows = [
+            ExportContextItem(
+                export_context_id=context.id,
+                source_type=item.source_type,
+                source_id=item.source_id,
+                source_name=item.source_name,
+                filename=item.filename,
+                mime_type=item.mime_type,
+                source_url=item.source_url,
+                source_path=item.source_path,
+                meta=item.metadata,
+                retrieval_rank=item.retrieval_rank,
+                retrieval_score=item.retrieval_score,
+                content_reference=item.content_reference,
+                export_strategy=item.export_strategy,
+                native_format=item.native_format,
+                size_bytes=item.size_bytes,
+                exportable=item.exportable,
+            )
+            for item in items
+        ]
+        self._export_repo.save_items(rows)
+        logger.info(
+            "Export context recorded: session=%r chat_message_id=%s sources=%s",
+            session_id,
+            chat_message_id,
+            len(rows),
+        )
 
     def process_user_message_with_file(
         self,
@@ -185,3 +251,23 @@ class ChatService:
     def delete_chat_session(self, session_id: str) -> None:
         self._chat_repo.delete_by_session_id(session_id)
         self._rag_service.delete_session(session_id)
+        if self._export_repo is not None:
+            self._export_repo.delete_by_session_id(session_id)
+        if self._document_file_repo is not None:
+            self._document_file_repo.delete_by_session_id(session_id)
+
+
+def _capture_rag_context(capture: RetrievalCapture, knowledge_context: str) -> None:
+    """Populate the turn's export capture from the legacy RAG context string."""
+    if not knowledge_context or "[Source" not in knowledge_context:
+        return
+    for filename, body in parse_rag_context(knowledge_context):
+        draft = ExportItemDraft(
+            source_type="UPLOADED_DOCUMENT",
+            source_id=filename,
+            source_name=filename,
+            filename=filename,
+            native_format=filename.rsplit(".", 1)[-1].lower().strip(".") if "." in filename else None,
+        )
+        draft.merge_content(body)
+        capture.add(draft)

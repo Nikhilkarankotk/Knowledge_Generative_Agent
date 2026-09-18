@@ -47,6 +47,41 @@ NO_REPOSITORIES_CONFIGURED = (
     "No GitHub repositories are configured for this Knowledge Generative Agent."
 )
 
+# Directories skipped when sampling repository contents (heavy/noise dirs).
+_RETRIEVE_SKIP_DIRS = frozenset(
+    {
+        "node_modules", ".git", "dist", "build", "coverage", ".venv", "venv",
+        "__pycache__", "vendor", "target", "bin", "obj", ".idea", ".vscode",
+        ".next", ".mypy_cache", ".pytest_cache", "site-packages",
+    }
+)
+
+# Binary / machine-generated extensions never read as repository contents.
+_RETRIEVE_SKIP_EXTENSIONS = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".ico", ".webp",
+        ".avif", ".pdf", ".zip", ".gz", ".tgz", ".tar", ".jar", ".war",
+        ".class", ".pyc", ".so", ".dll", ".dylib", ".exe", ".woff", ".woff2",
+        ".ttf", ".eot", ".bin", ".dat", ".lock", ".map", ".mp4", ".mp3",
+        ".wav", ".min.js", ".min.css", ".svg",
+    }
+)
+
+# Files read first when sampling repository contents (root-level orientation).
+_RETRIEVE_PRIORITY_FILES = frozenset(
+    {
+        "readme.md", "readme", "package.json", "pyproject.toml",
+        "requirements.txt", "requirements-dev.txt", "setup.py", "setup.cfg",
+        "pom.xml", "build.gradle", "cargo.toml", "go.mod", "dockerfile",
+        "docker-compose.yml", "docker-compose.yaml", "compose.yaml",
+        "compose.yml", ".env.example", "application.yaml", "application.yml",
+        "application.properties",
+    }
+)
+
+# Files larger than this are skipped without downloading their body.
+_RETRIEVE_SKIP_LARGE_BYTES = 200_000
+
 
 def _clean_allowed_repositories(repositories: list[str] | None) -> list[str]:
     """Normalize, de-duplicate (case-insensitively) and order the allowlist."""
@@ -87,16 +122,11 @@ class GitHubService:
         self._repo_char_limit = max(500, repo_char_limit)
         self._allowed_repositories = _clean_allowed_repositories(allowed_repositories)
         self._allowed_ids = {repo.lower() for repo in self._allowed_repositories}
-        if client is not None:
-            self._client = client
-        else:
-            self._client = httpx.Client(
-                base_url=self._base_url,
-                timeout=timeout_seconds,
-                headers={},
-            )
-        if api_token:
-            self._client.headers["Authorization"] = f"Bearer {api_token}"
+        self._client = client or httpx.Client(
+            base_url=self._base_url,
+            timeout=timeout_seconds,
+            headers={},
+        )
 
     @classmethod
     def from_settings(cls, settings: Any) -> GitHubService | None:
@@ -128,15 +158,58 @@ class GitHubService:
 
     # -- request helpers --------------------------------------------------------
 
-    def _get_json(
-        self, path: str, *, params: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    def _perform_request(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        anonymous: bool = False,
+    ) -> httpx.Response:
+        """Issue a GET request, attaching ``Authorization`` unless anonymous."""
+        headers: dict[str, str] = {}
+        if self._api_token and not anonymous:
+            headers["Authorization"] = f"Bearer {self._api_token}"
         try:
-            response = self._client.get(path, params=params)
+            return self._client.get(path, params=params, headers=headers)
         except httpx.TimeoutException as exc:
             raise GitHubApiError(f"GitHub request to {path} timed out.") from exc
         except httpx.HTTPError as exc:
             raise GitHubApiError(f"GitHub request to {path} failed: {exc}") from exc
+
+    def _request_with_fallback(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """GET once; on auth failure retry anonymously (public-repository fallback).
+
+        An invalid/expired ``GITHUB_TOKEN`` currently produces ``HTTP 401`` even
+        for public, allowlisted repositories, which blocks all retrieval. Public
+        repositories of the configured allowlist are still readable anonymously,
+        so a 401/403 that is not a rate limit is retried once without the token.
+        Private repositories remain protected: the anonymous attempt yields the
+        usual 404, never the content. Rate-limited responses are never retried.
+        """
+        response = self._perform_request(path, params=params)
+        if (
+            self._api_token
+            and response.status_code in (401, 403)
+            and not _is_rate_limit_response(response)
+        ):
+            logger.info(
+                "GitHub request to %s returned HTTP %s; retrying anonymously "
+                "(allowlisted public-repository fallback).",
+                path,
+                response.status_code,
+            )
+            response = self._perform_request(path, params=params, anonymous=True)
+        return response
+
+    def _get_json(
+        self, path: str, *, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        response = self._request_with_fallback(path, params=params)
         if response.status_code == 403 and (
             response.headers.get("x-ratelimit-remaining") == "0"
             or "rate limit" in (response.text or "").lower()
@@ -168,12 +241,7 @@ class GitHubService:
         self, path: str, *, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Like ``_get_json`` but tolerant of list payloads (``contents`` endpoint)."""
-        try:
-            response = self._client.get(path, params=params)
-        except httpx.TimeoutException as exc:
-            raise GitHubApiError(f"GitHub request to {path} timed out.") from exc
-        except httpx.HTTPError as exc:
-            raise GitHubApiError(f"GitHub request to {path} failed: {exc}") from exc
+        response = self._request_with_fallback(path, params=params)
         if response.status_code == 403 and (
             response.headers.get("x-ratelimit-remaining") == "0"
             or "rate limit" in (response.text or "").lower()
@@ -303,6 +371,220 @@ class GitHubService:
             + _cap(content.strip(), self._repo_char_limit)
         )
 
+    def get_file_content_text(self, repo: str, path: str, *, char_limit: int = 200_000) -> str:
+        """Decoded file text for the export analysis (allowlist-enforced).
+
+        Additive read-only helper used by the export service's repository
+        analysis. The repository is validated against the allowlist before any
+        request; the returned text is *not* attributed and may be up to
+        ``char_limit`` characters (truncated otherwise).
+        """
+        path = str(path or "").strip().strip("/")
+        if not path:
+            raise GitHubApiError("Please provide a repository and a file path.")
+        repo = self._require_allowed(repo, "get_file_content_text")
+        payload = self._raw_contents(repo, path)
+        content = _decode_base64(str((payload.get("content") or "") if isinstance(payload, dict) else ""))
+        return _cap(content.strip(), max(500, char_limit))
+
+    def retrieve_repository_contents(
+        self,
+        repo: str,
+        *,
+        max_items: int = 60,
+        max_chars: int = 25_000,
+        per_file_chars: int = 8_000,
+    ) -> str:
+        """Sample and attribute the actual contents of a repository.
+
+        Uses the bounded repository tree, then reads the most relevant readable
+        text files (root-level manifest/README files first) up to ``max_chars``
+        characters. Heavy directories, binary/lock/minified files and files
+        larger than ~200KB are skipped. The repository is validated against the
+        allowlist before any request. Returns an attributed, deterministic,
+        character-bounded text block the agent can ground an answer on - a
+        single-call replacement for guessing paths and reading many files.
+        """
+        repo = self._require_allowed(repo, "retrieve_repository_contents")
+        blobs = self._bounded_blobs(
+            repo,
+            max_items=max_items,
+            skip_dirs=_RETRIEVE_SKIP_DIRS,
+        )
+
+        candidates: list[tuple[str, int | None]] = []
+        skipped_noise = 0
+        for path, size in blobs:
+            base = path.rsplit("/", 1)[-1].lower()
+            if any(base.endswith(ext) for ext in _RETRIEVE_SKIP_EXTENSIONS):
+                skipped_noise += 1
+                continue
+            if size is not None and size > _RETRIEVE_SKIP_LARGE_BYTES:
+                skipped_noise += 1
+                continue
+            candidates.append((path, size))
+
+        candidates.sort(
+            key=lambda item: _retrieve_sort_key(item[0]),
+        )
+
+        blocks: list[str] = []
+        read_chars = 0
+        read_files = 0
+        unreadable = 0
+        for path, _size in candidates:
+            remaining = max_chars - read_chars
+            if remaining <= 0:
+                break
+            take = min(max(500, per_file_chars), remaining)
+            try:
+                content = self.get_file_content_text(repo, path, char_limit=take)
+            except GitHubApiError:
+                unreadable += 1
+                continue
+            if not content.strip():
+                unreadable += 1
+                continue
+            blocks.append(f"### {path}\n{content}")
+            read_chars += len(content)
+            read_files += 1
+
+        missing = len(candidates) - read_files - unreadable
+        header = (
+            f"[Source: GitHub: {repo}]\n"
+            f"Repository contents of {repo}: {read_files} file(s), "
+            f"{read_chars} characters sampled"
+        )
+        if missing > 0:
+            header += f" ({missing} more file(s) left unsampled to stay within limits)"
+        if unreadable:
+            header += f"; {unreadable} file(s) could not be read"
+        if not blocks:
+            return header + ".\nNo readable text file contents were retrieved."
+        return header + ":\n\n" + "\n\n".join(blocks)
+
+    def walk_repository(
+        self,
+        repo: str,
+        *,
+        max_items: int = 200,
+        max_depth: int = 4,
+        skip_dirs: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        """Bounded listing of a repository's tree (export analysis).
+
+        Prefers the recursive ``git/trees`` endpoint (a single request); falls back
+        to a breadth-first ``contents`` walk when the tree is truncated or the API
+        is unavailable. Returns ``{path, type}`` dicts (``type`` in ``file``/``dir``).
+        During the fallback walk, directories named in ``skip_dirs`` are recorded but
+        never descended into.
+        """
+        repo = self._require_allowed(repo, "walk_repository")
+        skip = {str(name).lower() for name in skip_dirs if name}
+
+        entries = self._tree_recursive(repo)
+        if entries is not None:
+            results: list[dict[str, Any]] = []
+            for entry in entries:
+                if len(results) >= max_items:
+                    break
+                entry_type = "dir" if entry.get("type") == "tree" else "file"
+                results.append({"path": str(entry.get("path") or ""), "type": entry_type})
+            return results
+
+        tree_results: list[dict[str, Any]] = []
+        pending: list[tuple[str, int]] = [("", 0)]
+        while pending and len(tree_results) < max_items:
+            path, depth = pending.pop(0)
+            items = self._raw_contents(repo, path)
+            if isinstance(items, dict):
+                items = [items]
+            for item in items:
+                if len(tree_results) >= max_items:
+                    break
+                entry_path = str(item.get("path") or "")
+                entry_type = "dir" if item.get("type") == "dir" else "file"
+                tree_results.append({"path": entry_path, "type": entry_type})
+                if entry_type == "dir" and depth < max_depth:
+                    name = entry_path.rsplit("/", 1)[-1].lower()
+                    if name in skip:
+                        continue
+                    pending.append((entry_path, depth + 1))
+        return tree_results
+
+    def _tree_recursive(self, repo: str) -> list[dict[str, Any]] | None:
+        """All repository paths via the recursive git-trees endpoint (one request).
+
+        Returns ``None`` (never raises) on API errors or truncated trees so callers
+        can fall back to the contents walk.
+        """
+        try:
+            meta = self._get_json(f"repos/{_quote_repo(repo)}")
+            branch = str(meta.get("default_branch") or "master")
+            payload = self._get_payload(
+                f"repos/{_quote_repo(repo)}/git/trees/{quote(branch, safe='')}",
+                params={"recursive": "1"},
+            )
+        except Exception:  # noqa: BLE001 - caller falls back to the contents walk
+            return None
+        if not isinstance(payload, dict) or payload.get("truncated"):
+            return None
+        tree = payload.get("tree")
+        if not isinstance(tree, list):
+            return None
+        return [
+            entry
+            for entry in tree
+            if isinstance(entry, dict) and entry.get("type") in ("blob", "tree")
+        ]
+
+    def _bounded_blobs(
+        self,
+        repo: str,
+        *,
+        max_items: int,
+        skip_dirs: frozenset[str],
+    ) -> list[tuple[str, int | None]]:
+        """Bounded ``(path, size)`` list of repository files (``size`` optional).
+
+        Prefers the recursive ``git/trees`` endpoint (which includes blob sizes
+        and needs a single request); falls back to a breadth-first ``contents``
+        walk (no sizes) when the tree endpoint fails or is truncated.
+        """
+        skip = {name.lower() for name in skip_dirs if name}
+        blobs: list[tuple[str, int | None]] = []
+        entries = self._tree_recursive(repo)
+        if entries is not None:
+            for entry in entries:
+                if len(blobs) >= max_items:
+                    break
+                if entry.get("type") != "blob":
+                    continue
+                path = str(entry.get("path") or "")
+                if _path_has_skip_dir(path, skip):
+                    continue
+                blobs.append((path, entry.get("size")))
+            return blobs
+
+        pending: list[tuple[str, int]] = [("", 0)]
+        while pending and len(blobs) < max_items:
+            path, depth = pending.pop(0)
+            items = self._raw_contents(repo, path)
+            if isinstance(items, dict):
+                items = [items]
+            for item in items:
+                if len(blobs) >= max_items:
+                    break
+                item_path = str(item.get("path") or "")
+                if item.get("type") == "dir":
+                    if depth < 5 and not _path_has_skip_dir(item_path, skip):
+                        pending.append((item_path, depth + 1))
+                    continue
+                if _path_has_skip_dir(item_path, skip):
+                    continue
+                blobs.append((item_path, item.get("size")))
+        return blobs
+
     def search_code(self, repository: str, query: str, limit: int | None = None) -> str:
         """GitHub code search restricted to a single allowlisted repository.
 
@@ -404,6 +686,28 @@ def _quote_repo(repo: str) -> str:
     return quote(repo, safe="/")
 
 
+def _retrieve_base_name(path: str) -> str:
+    return str(path).rsplit("/", 1)[-1].lower()
+
+
+def _retrieve_sort_key(path: str) -> tuple[int, str]:
+    """README first, then root manifest/config files, then the rest (stable)."""
+    base = _retrieve_base_name(path)
+    if base in ("readme.md", "readme", "readme.rst", "readme.txt"):
+        tier = 0
+    elif base in _RETRIEVE_PRIORITY_FILES:
+        tier = 1
+    else:
+        tier = 2
+    return (tier, path.lower())
+
+
+def _path_has_skip_dir(path: str, skip: set[str]) -> bool:
+    """True when any path segment is in the skip set (case-insensitive)."""
+    parts = str(path).lower().split("/")
+    return any(part in skip for part in parts)
+
+
 def _decode_base64(raw: str) -> str:
     try:
         decoded = base64.b64decode(raw)
@@ -414,3 +718,11 @@ def _decode_base64(raw: str) -> str:
 
 def _cap(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _is_rate_limit_response(response: httpx.Response) -> bool:
+    """True for GitHub's rate-limit 403 (never eligible for the public fallback)."""
+    return response.status_code == 403 and (
+        response.headers.get("x-ratelimit-remaining") == "0"
+        or "rate limit" in (response.text or "").lower()
+    )
