@@ -22,6 +22,7 @@ from app.services.conversation_memory_service import ConversationMemoryService
 from app.services.mistral_api_service import MistralApiService
 from app.services.translation_service import TranslationService
 from app.sk.semantic_kernel_factory import SemanticKernelFactory
+from app.sk.source_planner import NoOpSourcePlanner
 from tests.conftest import FakeLLM
 from tests.fake_sk_service import ScriptedChatCompletion, tool_results
 
@@ -65,7 +66,15 @@ def make_service(db_session, factory: SemanticKernelFactory | None, rag, *, llm:
 
 def make_factory(plan, *, answerer=None):
     fake = ScriptedChatCompletion(plan=plan, answerer=answerer)
-    return SemanticKernelFactory(Settings(), chat_service=fake, use_loop=False), fake
+    return (
+        SemanticKernelFactory(
+            Settings(),
+            chat_service=fake,
+            source_planner=NoOpSourcePlanner(),
+            use_loop=False,
+        ),
+        fake,
+    )
 
 
 def test_agent_path_persists_answer_and_skips_legacy_call(db_session) -> None:

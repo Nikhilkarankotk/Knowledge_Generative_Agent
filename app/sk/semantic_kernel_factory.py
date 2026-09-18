@@ -39,6 +39,13 @@ from app.plugins.sharepoint_plugin import SharePointPlugin
 from app.services.confluence_service import ConfluenceService
 from app.services.github_service import GitHubService
 from app.services.sharepoint_service import SharePointService
+from app.sk.source_planner import (
+    SOURCE_TYPES,
+    LLMSourcePlanner,
+    SourcePlanner,
+    source_for_plugin_name,
+)
+from app.sk.source_router import SourceRouter, render_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +61,8 @@ class SemanticKernelFactory:
         confluence_service: ConfluenceService | None = None,
         github_service: GitHubService | None = None,
         sharepoint_service: SharePointService | None = None,
+        source_planner: SourcePlanner | None = None,
+        source_router: SourceRouter | None = None,
         use_loop: bool = True,
     ) -> None:
         from app.sk.compat import apply_py314_compatibility_patch
@@ -65,6 +74,12 @@ class SemanticKernelFactory:
         self._github_service = github_service
         self._sharepoint_service = sharepoint_service
         self._chat_service = chat_service if chat_service is not None else self._build_chat_service(settings)
+        # Automatic source routing is on by default. Tests that exercise the raw
+        # function-calling loop can inject NoOpSourcePlanner.
+        self._source_planner: SourcePlanner = source_planner or LLMSourcePlanner(
+            complete=self._complete_for_planner
+        )
+        self._source_router = source_router or SourceRouter()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         if use_loop:
@@ -95,6 +110,28 @@ class SemanticKernelFactory:
 
         apply_mistral_compat(service)
         return service
+
+    # -- source planner ---------------------------------------------------------
+
+    def _complete_for_planner(self, prompt: str) -> str:
+        """Run a single tool-free completion for the source planner."""
+        from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.open_ai_prompt_execution_settings import (
+            OpenAIChatPromptExecutionSettings,
+        )
+        from semantic_kernel.contents import ChatHistory
+
+        history = ChatHistory()
+        history.add_user_message(prompt)
+        settings = OpenAIChatPromptExecutionSettings()
+        coro = self._chat_service.get_chat_message_contents(history, settings)
+        if self._loop is not None:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            contents = future.result(timeout=self._settings.sk_agent_timeout_seconds)
+        else:
+            contents = asyncio.run(coro)
+        if not contents:
+            return ""
+        return contents[0].content or ""
 
     # -- event loop -------------------------------------------------------------
 
@@ -142,13 +179,14 @@ class SemanticKernelFactory:
         from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
 
         if plugin_registrations is None:
-            registrations: list[tuple[str, Any]] = []
-            if rag_service is not None:
-                registrations.append(("Knowledge", KnowledgePlugin(rag_service, session_id or "", capture)))
-            registrations.append(("Confluence", ConfluencePlugin(confluence_service or self._confluence_service, capture)))
-            registrations.append(("GitHub", GitHubPlugin(github_service or self._github_service, capture)))
-            registrations.append(("SharePoint", SharePointPlugin(sharepoint_service or self._sharepoint_service, capture)))
-            plugin_registrations = registrations
+            plugin_registrations = self._build_registrations(
+                rag_service=rag_service,
+                session_id=session_id,
+                confluence_service=confluence_service,
+                github_service=github_service,
+                sharepoint_service=sharepoint_service,
+                capture=capture,
+            )
 
         kernel = Kernel()
         kernel.add_service(self._chat_service, overwrite=True)
@@ -164,6 +202,82 @@ class SemanticKernelFactory:
             ),
         )
         return KnowledgeGenerativeAgent(chat_agent)
+
+    def _build_registrations(
+        self,
+        *,
+        rag_service: Any | None = None,
+        session_id: str | None = None,
+        confluence_service: ConfluenceService | None = None,
+        github_service: GitHubService | None = None,
+        sharepoint_service: SharePointService | None = None,
+        capture: Any | None = None,
+    ) -> list[tuple[str, Any]]:
+        """Build the session-bound plugin registrations shared by build_agent/run_turn."""
+        registrations: list[tuple[str, Any]] = []
+        if rag_service is not None:
+            registrations.append(("Knowledge", KnowledgePlugin(rag_service, session_id or "", capture)))
+        registrations.append(("Confluence", ConfluencePlugin(confluence_service or self._confluence_service, capture)))
+        registrations.append(("GitHub", GitHubPlugin(github_service or self._github_service, capture)))
+        registrations.append(("SharePoint", SharePointPlugin(sharepoint_service or self._sharepoint_service, capture)))
+        return registrations
+
+    # -- turn orchestration (planner + pre-retrieval + synthesis) ----------------
+
+    def run_turn(
+        self,
+        *,
+        user_message: str,
+        chat_history: Any,
+        rag_service: Any | None = None,
+        session_id: str | None = None,
+        confluence_service: ConfluenceService | None = None,
+        github_service: GitHubService | None = None,
+        sharepoint_service: SharePointService | None = None,
+        instructions: str = SYSTEM_INSTRUCTIONS,
+        plugin_registrations: list[tuple[str, Any]] | None = None,
+        capture: Any | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """Plan sources, retrieve them, then run one grounded synthesis turn.
+
+        The source planner selects which registered sources to search; the router
+        invokes those sources' plugins and merges their evidence with attribution;
+        the agent then writes a single final answer. Because retrieval completes
+        before the agent runs, the agent can never answer first and ask permission
+        to search a source afterwards.
+        """
+        if plugin_registrations is None:
+            plugin_registrations = self._build_registrations(
+                rag_service=rag_service,
+                session_id=session_id,
+                confluence_service=confluence_service,
+                github_service=github_service,
+                sharepoint_service=sharepoint_service,
+                capture=capture,
+            )
+
+        plugins_by_source: dict[str, Any] = {}
+        for plugin_name, plugin in plugin_registrations:
+            source = source_for_plugin_name(plugin_name)
+            if source is not None:
+                plugins_by_source[source] = plugin
+        available = [source for source in SOURCE_TYPES if source in plugins_by_source]
+
+        selections = self._source_planner.plan(user_message, available)
+        if selections:
+            logger.info(
+                "Source planner selected %s for turn",
+                [selection.type for selection in selections],
+            )
+        prefetch = self._source_router.prefetch(selections, plugins_by_source, user_message)
+        turn_instructions = instructions + render_evidence(prefetch, selections)
+
+        agent = self.build_agent(
+            plugin_registrations=plugin_registrations,
+            instructions=turn_instructions,
+        )
+        return self.run_agent(agent, chat_history, timeout=timeout)
 
     # -- execution --------------------------------------------------------------
 

@@ -907,3 +907,114 @@ def test_drop_names_except_tool_keeps_tool_names() -> None:
         {"role": "tool", "tool_call_id": "9", "name": "Knowledge-search_documents", "content": "[]"}
     ]
     assert drop_names_except_tool(messages)[0]["name"] == "Knowledge-search_documents"
+
+
+class _EmptySecondSearchConfluence(StubConfluence):
+    def __init__(self) -> None:
+        super().__init__()
+        self._calls = 0
+
+    def search(self, query: str, limit: int | None = None, space_key: str | None = None) -> str:
+        self._calls += 1
+        if self._calls > 1:
+            return (
+                "No Confluence pages matched this query. This is not proof that "
+                "Confluence has no relevant documentation."
+            )
+        return super().search(query, limit, space_key)
+
+
+def test_confluence_retrieval_state_reaches_final_answer() -> None:
+    confluence = StubConfluence()
+    factory, _ = make_factory(
+        [("Confluence", "search_pages", {"query": "roadmap"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        session_id="s1",
+        confluence=confluence,
+        user_message="What is in the roadmap?",
+    )
+
+    assert "CONFLUENCE RETRIEVAL STATE" in answer
+    assert '"evidence_found": true' in answer
+    assert "Roadmap" in answer
+
+
+def test_confluence_state_keeps_evidence_after_empty_search() -> None:
+    confluence = _EmptySecondSearchConfluence()
+    factory, _ = make_factory(
+        [
+            ("Confluence", "search_pages", {"query": "roadmap"}),
+            ("Confluence", "search_pages", {"query": "roadmap architecture"}),
+        ]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        session_id="s1",
+        confluence=confluence,
+        user_message="Find the roadmap and its architecture.",
+    )
+
+    assert "Roadmap (space: Eng)" in answer
+    assert '"evidence_found": true' in answer
+    assert '"last_search_results": 0' in answer
+
+
+def test_system_instructions_require_evidence_preservation() -> None:
+    assert "EVIDENCE PRESERVATION AND FINAL-ANSWER GROUNDING" in SYSTEM_INSTRUCTIONS
+    assert "A later search that returns no" in SYSTEM_INSTRUCTIONS
+    assert "CONFLUENCE RETRIEVAL STATE" in SYSTEM_INSTRUCTIONS
+    assert "never say the documentation does not exist" in SYSTEM_INSTRUCTIONS
+    assert "Never invent or guess a scope identifier" in SYSTEM_INSTRUCTIONS
+    assert "GITHUB RETRIEVAL STATE" in SYSTEM_INSTRUCTIONS
+    assert "According to the Confluence" in SYSTEM_INSTRUCTIONS
+    assert "->" not in SYSTEM_INSTRUCTIONS
+    assert 'if "' not in SYSTEM_INSTRUCTIONS.lower()
+
+
+
+def test_github_retrieval_state_reaches_final_answer() -> None:
+    github = StubGitHub()
+    factory, _ = make_factory(
+        [("GitHub", "search_code", {"repository": "eng/payments", "query": "charge_payment"})]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        github=github,
+        user_message="Where is charge_payment implemented in eng/payments?",
+    )
+
+    assert "GITHUB RETRIEVAL STATE" in answer
+    assert '"source": "github"' in answer
+    assert '"evidence_found": true' in answer
+
+
+def test_multi_source_states_are_combined_in_final_answer() -> None:
+    confluence = StubConfluence()
+    github = StubGitHub()
+    factory, _ = make_factory(
+        [
+            ("Confluence", "search_pages", {"query": "Payments architecture"}),
+            ("GitHub", "search_code", {"repository": "eng/payments", "query": "charge_payment"}),
+        ]
+    )
+
+    answer = run_turn(
+        factory,
+        rag=RecordingRag(),
+        confluence=confluence,
+        github=github,
+        user_message="Compare the documented Payments architecture with the actual code.",
+    )
+
+    assert "CONFLUENCE RETRIEVAL STATE" in answer
+    assert "GITHUB RETRIEVAL STATE" in answer
+    assert "[Source: Confluence: Roadmap" in answer
+    assert "[Source: GitHub: eng/payments:src/api.py]" in answer

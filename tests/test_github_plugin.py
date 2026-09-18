@@ -98,7 +98,8 @@ def test_get_readme_forwards_repo() -> None:
 
     result = plugin.get_readme("acme/payments")
 
-    assert result == "[Source: GitHub: a/b]\nREADME of a/b"
+    assert result.startswith("[Source: GitHub: a/b]\nREADME of a/b")
+    assert "GITHUB RETRIEVAL STATE" in result
     assert stub.calls == [("get_readme", ("acme/payments",))]
 
 
@@ -154,7 +155,8 @@ def test_get_issue_forwards_number() -> None:
 
     result = plugin.get_issue("a/b", 12)
 
-    assert result == stub.single_issue_result
+    assert result.startswith(stub.single_issue_result)
+    assert '"retrieved": true' in result
     assert stub.calls == [("get_issue", ("a/b", 12))]
 
 
@@ -305,3 +307,77 @@ def test_list_repository_contents_root_captures_no_path_metadata() -> None:
 
     assert len(capture.items) == 1
     assert "path" not in capture.items[0].metadata
+
+
+class ScriptedGitHub:
+    """Service stub whose search_code returns queued outputs (or raises)."""
+
+    enabled = True
+
+    def __init__(self, search_outputs: list[object] | None = None) -> None:
+        self._search_outputs = list(search_outputs or [])
+        self.search_calls: list[tuple[str, str, int | None]] = []
+
+    def search_code(self, repository: str, query: str, limit: int | None = None) -> str:
+        self.search_calls.append((repository, query, limit))
+        output = self._search_outputs.pop(0) if self._search_outputs else ""
+        if isinstance(output, Exception):
+            raise output
+        return str(output)
+
+
+_CODE_HIT = (
+    "[Source: GitHub: acme/payments:src/pay.py]\n"
+    "URL: https://github.com/acme/payments/blob/main/src/pay.py\n"
+    "Snippet: def charge_payment"
+)
+
+
+def test_code_search_evidence_survives_later_empty_search() -> None:
+    stub = ScriptedGitHub([_CODE_HIT, ""])
+    plugin = GitHubPlugin(stub)  # type: ignore[arg-type]
+
+    first = plugin.search_code("acme/payments", "charge_payment")
+    second = plugin.search_code("acme/payments", "charge_payment architecture")
+
+    assert "acme/payments:src/pay.py" in first
+    assert "acme/payments:src/pay.py" in second
+    assert '"evidence_found": true' in second
+    assert '"last_search_results": 0' in second
+    assert "does not erase them" in second
+
+
+def test_code_search_failure_preserves_prior_evidence_and_reports_state() -> None:
+    stub = ScriptedGitHub([_CODE_HIT, GitHubApiError("GitHub is down")])
+    plugin = GitHubPlugin(stub)  # type: ignore[arg-type]
+
+    plugin.search_code("acme/payments", "charge_payment")
+    result = plugin.search_code("acme/payments", "charge_payment api")
+
+    assert "currently unavailable" in result
+    assert "acme/payments:src/pay.py" in result
+    assert '"evidence_found": true' in result
+    assert "search failed" in result
+
+
+def test_get_readme_state_marks_repository_retrieved() -> None:
+    plugin = GitHubPlugin(StubGitHub())  # type: ignore[arg-type]
+
+    result = plugin.get_readme("acme/payments")
+
+    assert '"source": "github"' in result
+    assert '"retrieved": true' in result
+
+
+def test_github_state_never_leaks_into_capture() -> None:
+    from app.export.capture import RetrievalCapture
+
+    stub = ScriptedGitHub([_CODE_HIT])
+    capture = RetrievalCapture()
+    plugin = GitHubPlugin(stub, capture=capture)  # type: ignore[arg-type]
+
+    result = plugin.search_code("acme/payments", "charge_payment")
+
+    assert "GITHUB RETRIEVAL STATE" in result
+    assert len(capture.items) == 1
+    assert "GITHUB RETRIEVAL STATE" not in (capture.items[0].content_reference or "")

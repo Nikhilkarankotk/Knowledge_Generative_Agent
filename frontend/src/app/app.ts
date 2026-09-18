@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { MatBadgeModule } from '@angular/material/badge';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -9,6 +9,17 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { Sidebar } from './components/sidebar/sidebar';
 import { ChatInterface } from './components/chat-interface/chat-interface';
+import { Api } from './services/api/api';
+
+export interface Expert {
+  name: string;
+  role: string;
+  source: string;
+  sourceCount: number;
+  reason: string;
+  initials: string;
+  sources?: string[];
+}
 
 @Component({
   selector: 'app-root',
@@ -16,7 +27,9 @@ import { ChatInterface } from './components/chat-interface/chat-interface';
   templateUrl: './app.html',
   styleUrls: ['./app.css', './pnc-brand.css'],
 })
-export class App {
+export class App implements OnInit {
+  private api = inject(Api);
+
   readonly alerts = [
     { title: 'Policy refresh required', detail: 'Information Security Policy expires in 12 days.', tone: 'warning' },
     { title: 'New source indexed', detail: 'Q3 Treasury Operating Plan is ready to ask.', tone: 'success' },
@@ -27,9 +40,24 @@ export class App {
     { title: 'Liquidity reporting guide', detail: 'Updated Sep 10 · Finance', icon: 'account_balance' },
   ];
   readonly searches = ['Treasury management', 'Client onboarding', 'Risk appetite', 'Cybersecurity controls'];
-  readonly experts = [
-    { initials: 'JS', name: 'John Smith', specialty: 'Payments Platform' },
-    { initials: 'SJ', name: 'Sarah Johnson', specialty: 'Fraud & Risk' },
-    { initials: 'MP', name: 'Mike Patel', specialty: 'Core Systems' },
-  ];
+
+  experts: Expert[] = [];
+  expertsLoaded = false;
+
+  ngOnInit(): void {
+    this.loadExperts();
+  }
+
+  loadExperts(): void {
+    this.api.getTopExperts().subscribe({
+      next: (response: any) => {
+        this.experts = Array.isArray(response?.experts) ? response.experts : [];
+        this.expertsLoaded = true;
+      },
+      error: () => {
+        this.experts = [];
+        this.expertsLoaded = true;
+      },
+    });
+  }
 }

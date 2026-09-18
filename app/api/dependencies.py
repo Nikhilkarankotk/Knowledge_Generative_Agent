@@ -40,6 +40,7 @@ from app.services.github_service import GitHubService
 from app.services.mistral_api_service import MistralApiService
 from app.services.mistral_service import MistralService
 from app.services.sharepoint_service import SharePointService
+from app.services.sme_expert_service import SmeExpertService
 from app.services.translation_service import TranslationService
 
 DEFAULT_SESSION_ID = "default-session"
@@ -279,3 +280,10 @@ def get_export_service(
         close = getattr(synthesis_service, "close", None)
         if callable(close):
             close()
+
+
+def get_sme_expert_service(
+    export_repo: ExportContextRepository = Depends(get_export_context_repository),
+) -> SmeExpertService:
+    """Resolve dashboard experts from the current query's captured sources."""
+    return SmeExpertService(export_repo)

@@ -12,12 +12,14 @@ markers so the agent can answer from the sources that are still available.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from semantic_kernel.functions import kernel_function
 
 from app.core.exceptions import GitHubApiError
 from app.export.capture import ExportItemDraft, RetrievalCapture, parse_github_code_search
 from app.export.formats import ScenarioType, SourceType
+from app.retrieval.state import RetrievalLedger, append_state
 from app.services.github_service import GitHubService
 
 # The @kernel_function decorator below runs signature introspection at class-definition
@@ -96,6 +98,32 @@ GET_ISSUE_DESCRIPTION = (
 )
 
 
+def _artifact_item(repo: str, path: str = "", *, url: str = "") -> dict[str, Any]:
+    """Normalize a repository/file into the shared evidence-item shape."""
+    item_id = f"{repo}:{path}" if path else repo
+    metadata: dict[str, Any] = {"repository": repo}
+    if path:
+        metadata["path"] = path
+    return {
+        "id": item_id,
+        "title": path or repo,
+        "url": url,
+        "parent": repo if path else "",
+        "metadata": metadata,
+    }
+
+
+def _code_relevance(query: str, item: dict[str, Any]) -> str:
+    """Best-effort relevance of a code hit to the query (path or repository)."""
+    needle = (query or "").casefold().strip()
+    title = str(item.get("title") or "").casefold()
+    metadata = item.get("metadata") or {}
+    repo = str(metadata.get("repository") or "").casefold()
+    if needle and (needle in title or needle in repo):
+        return "title"
+    return "keyword"
+
+
 class GitHubPlugin:
     """Read-only GitHub repository/code access limited to the configured allowlist."""
 
@@ -106,6 +134,7 @@ class GitHubPlugin:
     ) -> None:
         self._service = github_service
         self._capture = capture
+        self._ledger = RetrievalLedger("github", item_label="item")
 
     @kernel_function(
         description=LIST_ALLOWED_REPOSITORIES_DESCRIPTION,
@@ -135,15 +164,25 @@ class GitHubPlugin:
         logger.info("GitHub get_repository invoked: repo=%r", repo)
         try:
             result = self._service.get_repository(repo)  # type: ignore[union-attr]
-            _capture_repo(self._capture, repo, _strip_source_lines(result))
+            stripped = _strip_source_lines(result)
+            _capture_repo(self._capture, repo, stripped)
+            self._ledger.record_retrieval(repo, _artifact_item(repo), stripped)
             logger.info("GitHub get_repository completed: repo=%r", repo)
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_error(f"repository {repo} retrieval failed: {exc}")
             logger.warning("GitHub get_repository(%s) failed: %s", repo, exc)
-            return f"Could not retrieve GitHub repository {repo}: {exc}"
+            return append_state(
+                f"Could not retrieve GitHub repository {repo}: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_error(f"repository {repo} retrieval failed: unexpected error")
             logger.exception("Unexpected GitHub get_repository failure")
-            return f"Could not retrieve GitHub repository {repo}."
+            return append_state(
+                f"Could not retrieve GitHub repository {repo}.",
+                self._ledger.render(),
+            )
 
     @kernel_function(description=GET_README_DESCRIPTION, name="get_readme")
     def get_readme(self, repo: str) -> str:
@@ -153,15 +192,25 @@ class GitHubPlugin:
         logger.info("GitHub get_readme invoked: repo=%r", repo)
         try:
             result = self._service.get_readme(repo)  # type: ignore[union-attr]
-            _capture_repo(self._capture, repo, _strip_source_lines(result))
+            stripped = _strip_source_lines(result)
+            _capture_repo(self._capture, repo, stripped)
+            self._ledger.record_retrieval(repo, _artifact_item(repo), stripped)
             logger.info("GitHub get_readme completed: repo=%r", repo)
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_error(f"README {repo} retrieval failed: {exc}")
             logger.warning("GitHub get_readme(%s) failed: %s", repo, exc)
-            return f"Could not retrieve the README of {repo}: {exc}"
+            return append_state(
+                f"Could not retrieve the README of {repo}: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_error(f"README {repo} retrieval failed: unexpected error")
             logger.exception("Unexpected GitHub get_readme failure")
-            return f"Could not retrieve the README of {repo}."
+            return append_state(
+                f"Could not retrieve the README of {repo}.",
+                self._ledger.render(),
+            )
 
     @kernel_function(
         description=LIST_REPOSITORY_CONTENTS_DESCRIPTION,
@@ -175,18 +224,31 @@ class GitHubPlugin:
         try:
             result = self._service.list_repository_contents(repo, path)  # type: ignore[union-attr]
             _capture_repo(self._capture, repo, path=path or "")
+            self._ledger.record_retrieval(
+                f"{repo}:{path}" if path else repo,
+                _artifact_item(repo, path),
+                _strip_source_lines(result),
+            )
             logger.info(
                 "GitHub list_repository_contents completed: repo=%r path=%r",
                 repo,
                 path,
             )
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_error(f"contents of {repo} retrieval failed: {exc}")
             logger.warning("GitHub list_repository_contents(%s) failed: %s", repo, exc)
-            return f"Could not list the contents of {repo}: {exc}"
+            return append_state(
+                f"Could not list the contents of {repo}: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_error(f"contents of {repo} retrieval failed: unexpected error")
             logger.exception("Unexpected GitHub list_repository_contents failure")
-            return f"Could not list the contents of {repo}."
+            return append_state(
+                f"Could not list the contents of {repo}.",
+                self._ledger.render(),
+            )
 
     @kernel_function(description=GET_FILE_CONTENT_DESCRIPTION, name="get_file_content")
     def get_file_content(self, repo: str, path: str) -> str:
@@ -197,14 +259,27 @@ class GitHubPlugin:
         try:
             result = self._service.get_file_content(repo, path)  # type: ignore[union-attr]
             _capture_repo(self._capture, repo, path=path)
+            self._ledger.record_retrieval(
+                f"{repo}:{path}",
+                _artifact_item(repo, path),
+                _strip_source_lines(result),
+            )
             logger.info("GitHub get_file_content completed: repo=%r path=%r", repo, path)
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_error(f"file {repo}:{path} retrieval failed: {exc}")
             logger.warning("GitHub get_file_content(%s:%s) failed: %s", repo, path, exc)
-            return f"Could not retrieve the file {path} from {repo}: {exc}"
+            return append_state(
+                f"Could not retrieve the file {path} from {repo}: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_error(f"file {repo}:{path} retrieval failed: unexpected error")
             logger.exception("Unexpected GitHub get_file_content failure")
-            return f"Could not retrieve the file {path} from {repo}."
+            return append_state(
+                f"Could not retrieve the file {path} from {repo}.",
+                self._ledger.render(),
+            )
 
     @kernel_function(
         description=RETRIEVE_REPOSITORY_CONTENTS_DESCRIPTION,
@@ -228,15 +303,25 @@ class GitHubPlugin:
                 max_items=max_items or 60,
                 max_chars=max_chars or 25_000,
             )
-            _capture_repo(self._capture, repo, _strip_source_lines(result))
+            stripped = _strip_source_lines(result)
+            _capture_repo(self._capture, repo, stripped)
+            self._ledger.record_retrieval(repo, _artifact_item(repo), stripped)
             logger.info("GitHub retrieve_repository_contents completed: repo=%r", repo)
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_error(f"contents of {repo} retrieval failed: {exc}")
             logger.warning("GitHub retrieve_repository_contents(%s) failed: %s", repo, exc)
-            return f"Could not retrieve the contents of {repo}: {exc}"
+            return append_state(
+                f"Could not retrieve the contents of {repo}: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_error(f"contents of {repo} retrieval failed: unexpected error")
             logger.exception("Unexpected GitHub retrieve_repository_contents failure")
-            return f"Could not retrieve the contents of {repo}."
+            return append_state(
+                f"Could not retrieve the contents of {repo}.",
+                self._ledger.render(),
+            )
 
     @kernel_function(description=SEARCH_CODE_DESCRIPTION, name="search_code")
     def search_code(self, repository: str, query: str, limit: int | None = None) -> str:
@@ -252,18 +337,38 @@ class GitHubPlugin:
         try:
             result = self._service.search_code(repository, query, limit=limit)  # type: ignore[union-attr]
             _capture_code_search(self._capture, result)
+            self._ledger.record_search(
+                query,
+                [
+                    _artifact_item(
+                        str(found.get("repo") or repository),
+                        str(found.get("path") or ""),
+                        url=str(found.get("url") or ""),
+                    )
+                    for found in parse_github_code_search(result)
+                ],
+                relevance=_code_relevance,
+            )
             logger.info(
                 "GitHub search_code completed: repository=%r %d results returned",
                 repository,
                 _count_sources(result),
             )
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_search_error(query, str(exc))
             logger.warning("GitHub search_code(%s) failed: %s", repository, exc)
-            return f"GitHub code search is currently unavailable: {exc}"
+            return append_state(
+                f"GitHub code search is currently unavailable: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_search_error(query, "unexpected error")
             logger.exception("Unexpected GitHub search_code failure")
-            return "GitHub code search is currently unavailable."
+            return append_state(
+                "GitHub code search is currently unavailable.",
+                self._ledger.render(),
+            )
 
     @kernel_function(description=GET_ISSUE_DESCRIPTION, name="get_issue")
     def get_issue(self, repo: str, issue_number: int) -> str:
@@ -273,15 +378,37 @@ class GitHubPlugin:
         logger.info("GitHub get_issue invoked: repo=%r issue=%r", repo, issue_number)
         try:
             result = self._service.get_issue(repo, issue_number)  # type: ignore[union-attr]
-            _capture_repo(self._capture, repo, _strip_source_lines(result))
+            stripped = _strip_source_lines(result)
+            issue_id = f"{repo}#{issue_number}"
+            _capture_repo(self._capture, repo, stripped)
+            self._ledger.record_retrieval(
+                issue_id,
+                {
+                    "id": issue_id,
+                    "title": issue_id,
+                    "parent": repo,
+                    "metadata": {"repository": repo, "issue": issue_number},
+                },
+                stripped,
+            )
             logger.info("GitHub get_issue completed: repo=%r issue=%r", repo, issue_number)
-            return result
+            return append_state(result, self._ledger.render())
         except GitHubApiError as exc:
+            self._ledger.record_error(f"issue {repo}#{issue_number} retrieval failed: {exc}")
             logger.warning("GitHub get_issue(%s#%s) failed: %s", repo, issue_number, exc)
-            return f"Could not retrieve GitHub issue {repo}#{issue_number}: {exc}"
+            return append_state(
+                f"Could not retrieve GitHub issue {repo}#{issue_number}: {exc}",
+                self._ledger.render(),
+            )
         except Exception:  # noqa: BLE001
+            self._ledger.record_error(
+                f"issue {repo}#{issue_number} retrieval failed: unexpected error"
+            )
             logger.exception("Unexpected GitHub get_issue failure")
-            return f"Could not retrieve GitHub issue {repo}#{issue_number}."
+            return append_state(
+                f"Could not retrieve GitHub issue {repo}#{issue_number}.",
+                self._ledger.render(),
+            )
 
     @property
     def _enabled(self) -> bool:

@@ -258,7 +258,17 @@ def _capture_sharepoint_results(capture: RetrievalCapture | None, result: str) -
             continue
         metadata = {
             key: item[key]
-            for key in ("drive_id", "site_id", "size", "modified", "created", "parent", "type")
+            for key in (
+                "drive_id",
+                "site_id",
+                "size",
+                "modified",
+                "created",
+                "parent",
+                "type",
+                "owner",
+                "last_editor",
+            )
             if item.get(key) is not None
         }
         draft = ExportItemDraft(

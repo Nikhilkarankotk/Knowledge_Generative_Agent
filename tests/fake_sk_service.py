@@ -60,6 +60,20 @@ def _default_answer(history: ChatHistory) -> str:
     return "\n".join(results) or "Synthesized answer"
 
 
+def system_text(history: ChatHistory) -> str:
+    """Return the system message text (agent instructions + injected evidence)."""
+    return "\n".join(
+        message.content
+        for message in history.messages
+        if message.role == AuthorRole.SYSTEM and isinstance(message.content, str)
+    )
+
+
+def received_text(history: ChatHistory) -> str:
+    """Return everything the model was given: system text + tool results."""
+    return "\n".join(filter(None, [system_text(history), *tool_results(history)]))
+
+
 def _count_tool_calls(history: ChatHistory) -> int:
     count = 0
     for message in history.messages:

@@ -92,6 +92,20 @@ NO_FOLDERS_CONFIGURED = (
 )
 
 
+def _graph_person_name(identity: Any) -> str:
+    """Best-effort display name for a Graph identity set (never fabricated)."""
+    if not isinstance(identity, dict):
+        return ""
+    user = identity.get("user")
+    candidates = [user if isinstance(user, dict) else {}, identity]
+    for candidate in candidates:
+        for key in ("displayName", "email"):
+            value = str(candidate.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def _clean_allowed_sites(sites: list[str] | None) -> list[str]:
     """Normalize, de-duplicate (case-insensitively) and order the site allowlist."""
     result: list[str] = []
@@ -555,7 +569,7 @@ class SharePointService:
             "$top": _LIBRARY_CHILDREN_TOP,
             "$select": (
                 "id,name,size,webUrl,createdDateTime,lastModifiedDateTime,"
-                "folder,file,mimeType,parentReference"
+                "createdBy,lastModifiedBy,folder,file,mimeType,parentReference"
             ),
         }
         payload = self._request("GET", endpoint, params=params)
@@ -715,6 +729,8 @@ class SharePointService:
                 "size",
                 "createdDateTime",
                 "lastModifiedDateTime",
+                "createdBy",
+                "lastModifiedBy",
                 "mimeType",
                 "parentReference",
             ],
@@ -755,6 +771,8 @@ class SharePointService:
             "size": resource.get("size"),
             "createdDateTime": str(resource.get("createdDateTime") or ""),
             "lastModifiedDateTime": str(resource.get("lastModifiedDateTime") or ""),
+            "createdBy": resource.get("createdBy") if isinstance(resource.get("createdBy"), dict) else {},
+            "lastModifiedBy": resource.get("lastModifiedBy") if isinstance(resource.get("lastModifiedBy"), dict) else {},
             "mimeType": str(resource.get("mimeType") or ""),
             "_drive_id": drive_id,
             "_parent_path": parent_path,
@@ -822,6 +840,8 @@ class SharePointService:
         size = item.get("size")
         created = str(item.get("createdDateTime") or "")
         modified = str(item.get("lastModifiedDateTime") or "")
+        created_by = _graph_person_name(item.get("createdBy"))
+        modified_by = _graph_person_name(item.get("lastModifiedBy"))
         mime = str(item.get("mimeType") or "")
         parent = str(item.get("_parent_path") or "")
         is_folder = bool(item.get("folder"))
@@ -835,8 +855,12 @@ class SharePointService:
             lines.append(f"Document id: {item_id}")
         if size is not None:
             lines.append(f"Size: {size} bytes")
+        if created_by:
+            lines.append(f"Created by: {created_by}")
         if created:
             lines.append(f"Created: {created}")
+        if modified_by:
+            lines.append(f"Modified by: {modified_by}")
         if modified:
             lines.append(f"Modified: {modified}")
         if mime:
@@ -853,12 +877,18 @@ class SharePointService:
         drive_id = str(item.get("_drive_id") or "")
         is_folder = bool(item.get("folder"))
         size = int(item.get("size") or 0)
+        created_by = _graph_person_name(item.get("createdBy"))
+        modified_by = _graph_person_name(item.get("lastModifiedBy"))
         header = (
             f"[Source: SharePoint: {name}]\n"
             f"URL: {web_url}\n"
             f"Drive id: {drive_id}\n"
             f"Document id: {item_id}"
         )
+        if created_by:
+            header += f"\nCreated by: {created_by}"
+        if modified_by:
+            header += f"\nModified by: {modified_by}"
         if is_folder:
             return header + "\nType: folder"
         if size > _MAX_DOWNLOAD_BYTES:
@@ -1016,7 +1046,7 @@ class SharePointService:
                 item_path,
                 params={
                     "$select": (
-                        "id,name,webUrl,size,lastModifiedDateTime,file,mimeType,parentReference"
+                        "id,name,webUrl,size,lastModifiedDateTime,createdBy,lastModifiedBy,file,mimeType,parentReference"
                     ),
                 },
             )
@@ -1032,7 +1062,7 @@ class SharePointService:
             item_path,
             params={
                 "$select": (
-                    "id,name,webUrl,size,lastModifiedDateTime,file,mimeType,parentReference"
+                    "id,name,webUrl,size,lastModifiedDateTime,createdBy,lastModifiedBy,file,mimeType,parentReference"
                 ),
             },
         )
@@ -1151,7 +1181,7 @@ class SharePointService:
                 item_path,
                 params={
                     "$select": (
-                        "id,name,webUrl,size,lastModifiedDateTime,file,mimeType,parentReference"
+                        "id,name,webUrl,size,lastModifiedDateTime,createdBy,lastModifiedBy,file,mimeType,parentReference"
                     ),
                 },
             )
@@ -1162,7 +1192,7 @@ class SharePointService:
                 item_path,
                 params={
                     "$select": (
-                        "id,name,webUrl,size,lastModifiedDateTime,file,mimeType,parentReference"
+                        "id,name,webUrl,size,lastModifiedDateTime,createdBy,lastModifiedBy,file,mimeType,parentReference"
                     ),
                 },
             )

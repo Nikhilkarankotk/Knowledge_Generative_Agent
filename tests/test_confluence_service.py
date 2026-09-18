@@ -34,7 +34,7 @@ def test_search_formats_attributed_results() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/rest/api/content/search")
         params = parse_qs(request.url.query.decode())
-        assert params["expand"][0] == "version,space,excerpt,ancestors"
+        assert params["expand"][0] == "version,space,history,excerpt,ancestors"
         assert 'title ~ "billing"' in params["cql"][0] and "type = page" in params["cql"][0]
         return httpx.Response(
             200,
@@ -80,7 +80,9 @@ def test_search_cql_escapes_quotes() -> None:
 
 def test_search_empty_results_message() -> None:
     service = make_service(lambda request: httpx.Response(200, json={"results": []}))
-    assert service.search("nothing matches") == "No Confluence pages found matching the query."
+    output = service.search("nothing matches")
+    assert output.startswith("No Confluence pages matched this query.")
+    assert "no relevant documentation" in output
 
 
 def test_search_finds_nested_page_under_application_anchor() -> None:
@@ -391,6 +393,153 @@ def test_get_page_without_content_reports_missing() -> None:
         )
     )
     assert "No content available for Confluence page 'Empty Page'" in service.get_page("2000")
+
+
+def _design_page_payload() -> dict:
+    return {
+        "id": "9000",
+        "type": "page",
+        "title": "Netflix System Design and Implementation",
+        "_links": {"webui": "/spaces/ARCH/pages/9000"},
+        "body": {"view": {"value": "<p>Design doc</p>"}},
+        "version": {"by": {"displayName": "Tejaswinik"}, "when": "2026-02-02T10:00:00Z"},
+        "history": {
+            "createdBy": {"displayName": "Nikhil Karankot"},
+            "lastUpdated": {
+                "by": {"displayName": "Tejaswinik"},
+                "when": "2026-02-02T10:00:00Z",
+            },
+        },
+    }
+
+
+def test_get_page_includes_owner_and_recent_editors_from_version_history() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/version"):
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "number": 2,
+                            "by": {"displayName": "Tejaswinik", "accountId": "a2"},
+                            "when": "2026-02-02T10:00:00Z",
+                        },
+                        {
+                            "number": 1,
+                            "by": {"displayName": "Nikhil Karankot", "accountId": "a1"},
+                            "when": "2026-01-01T10:00:00Z",
+                        },
+                    ]
+                },
+            )
+        return httpx.Response(200, json=_design_page_payload())
+
+    service = make_service(handler)
+    output = service.get_page("9000")
+
+    assert "Owner: Nikhil Karankot" in output
+    assert "Last modified by: Tejaswinik" in output
+    assert "Recent editor: Tejaswinik | 2026-02-02T10:00:00Z | 2" in output
+    assert "Recent editor: Nikhil Karankot | 2026-01-01T10:00:00Z | 1" in output
+    assert "Design doc" in output
+
+
+def test_get_page_degrades_gracefully_when_version_history_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/version"):
+            return httpx.Response(403, json={})
+        return httpx.Response(200, json=_design_page_payload())
+
+    service = make_service(handler)
+    output = service.get_page("9000")
+
+    assert "Owner: Nikhil Karankot" in output
+    assert "Last modified by: Tejaswinik" in output
+    assert "Recent editor: Tejaswinik | 2026-02-02T10:00:00Z" in output
+    assert "Design doc" in output
+
+
+def test_recent_editor_names_dedupes_same_person_across_versions() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/rest/api/content/9000/version")
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"by": {"displayName": "Tejaswinik", "accountId": "a2"}},
+                    {"by": {"displayName": "Tejaswinik", "accountId": "a2"}},
+                    {"by": {"displayName": "Nikhil", "accountId": "a1"}},
+                ]
+            },
+        )
+
+    service = make_service(handler)
+    assert service.recent_editor_names("9000") == ["Tejaswinik", "Nikhil"]
+
+
+def test_recent_editor_versions_returns_ordered_details() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "number": 3,
+                        "by": {"displayName": "Tejaswinik"},
+                        "when": "2026-03-03T09:00:00Z",
+                    },
+                    {
+                        "number": 2,
+                        "by": {"displayName": "Tejaswinik"},
+                        "when": "2026-02-02T10:00:00Z",
+                    },
+                    {
+                        "number": 1,
+                        "by": {"displayName": "Nikhil"},
+                        "when": "2026-01-01T10:00:00Z",
+                    },
+                ]
+            },
+        )
+
+    service = make_service(handler)
+    assert service.recent_editor_versions("9000") == [
+        {"name": "Tejaswinik", "when": "2026-03-03T09:00:00Z", "version": "3"},
+        {"name": "Nikhil", "when": "2026-01-01T10:00:00Z", "version": "1"},
+    ]
+
+
+def test_recent_editor_names_never_fabricates_for_empty_history() -> None:
+    service = make_service(
+        lambda request: httpx.Response(200, json={"results": []})
+    )
+    assert service.recent_editor_names("9000") == []
+
+
+def test_search_formats_owner_and_editor_from_history_expand() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "1",
+                        "title": "Billing",
+                        "space": {"name": "Payments"},
+                        "_links": {"webui": "/pages/1"},
+                        "version": {"by": {"displayName": "Tejaswinik"}},
+                        "history": {"createdBy": {"displayName": "Nikhil Karankot"}},
+                    }
+                ]
+            },
+        )
+
+    service = make_service(handler)
+    output = service.search("billing")
+
+    assert "Owner: Nikhil Karankot" in output
+    assert "Last modified by: Tejaswinik" in output
 
 
 @pytest.mark.parametrize(

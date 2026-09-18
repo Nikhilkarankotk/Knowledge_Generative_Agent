@@ -21,9 +21,23 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.retrieval.state import strip_retrieval_state
+
 # Guard so a pathological retrieval result can never be persisted in full.
 _MAX_CONTENT_REFERENCE_CHARS = 200_000
 _MAX_ITEMS = 200
+
+__all__ = [
+    "ExportItemDraft",
+    "RetrievalCapture",
+    "parse_confluence_page",
+    "parse_confluence_search",
+    "parse_github_code_search",
+    "parse_github_target",
+    "parse_rag_context",
+    "parse_sharepoint_items",
+    "strip_retrieval_state",
+]
 
 
 @dataclass
@@ -154,7 +168,7 @@ def parse_rag_context(text: str) -> list[tuple[str, str]]:
     blocks: list[tuple[str, str | None]] = []
     current_file: str | None = None
     current_text: list[str] = []
-    for raw_line in (text or "").splitlines():
+    for raw_line in strip_retrieval_state(text or "").splitlines():
         line = raw_line.rstrip("\r")
         match = re.match(r"^\[Source: ([^\]]+)\]$", line)
         if match:
@@ -173,8 +187,9 @@ def parse_rag_context(text: str) -> list[tuple[str, str]]:
 def parse_confluence_search(text: str) -> list[dict[str, Any]]:
     """Parse ``search_pages`` output blocks into page metadata dicts."""
     pages: list[dict[str, Any]] = []
-    for block in re.split(r"\n{2,}", (text or "")):
+    for block in re.split(r"\n{2,}", strip_retrieval_state(text)):
         page: dict[str, Any] = {}
+        details: list[dict[str, str]] = []
         for line in block.splitlines():
             if line.startswith("[Source: Confluence:"):
                 raw = line[len("[Source: Confluence: "):].rstrip("]")
@@ -187,41 +202,109 @@ def parse_confluence_search(text: str) -> list[dict[str, Any]]:
                 page["url"] = line[len("URL: "):].strip()
             elif line.startswith("Parent: "):
                 page["parent"] = line[len("Parent: "):].strip()
+            elif line.startswith("Owner: "):
+                page["owner"] = line[len("Owner: "):].strip()
+            elif line.startswith("Last modified by: "):
+                page["last_editor"] = line[len("Last modified by: "):].strip()
+            elif line.startswith("Recent editor: "):
+                entry = _parse_recent_editor(line[len("Recent editor: "):])
+                if entry:
+                    details.append(entry)
+            elif line.startswith("Last modified: "):
+                page["modified"] = line[len("Last modified: "):].strip()
             elif line.startswith("Excerpt: "):
                 page["excerpt"] = line[len("Excerpt: "):].strip()
+        if details:
+            page["recent_editor_details"] = details
+            page["recent_editors"] = [entry["name"] for entry in details]
         if page.get("page_id"):
             pages.append(page)
     return pages
 
 
 def parse_confluence_page(text: str) -> dict[str, Any] | None:
-    """Parse ``get_page`` output into {title, url, content}."""
-    lines = (text or "").splitlines()
+    """Parse ``get_page`` output into {title, url, content, owner, last_editor}."""
+    lines = strip_retrieval_state(text or "").splitlines()
     title: str | None = None
     url: str | None = None
-    for _index, line in enumerate(lines):
+    people: dict[str, Any] = {}
+    details: list[dict[str, str]] = []
+    content_start = 0
+    for index, line in enumerate(lines):
         if line.startswith("[Source: Confluence:"):
             raw = line[len("[Source: Confluence: "):].rstrip("]")
             title = raw.split(" (space: ")[0].strip()
+            content_start = index + 1
+        elif line.startswith("Owner: "):
+            people["owner"] = line[len("Owner: "):].strip()
+        elif line.startswith("Last modified by: "):
+            people["last_editor"] = line[len("Last modified by: "):].strip()
+        elif line.startswith("Recent editor: "):
+            entry = _parse_recent_editor(line[len("Recent editor: "):])
+            if entry:
+                details.append(entry)
+        elif line.startswith("Last modified: "):
+            people["modified"] = line[len("Last modified: "):].strip()
         elif line.startswith("["):
             continue
         elif title is not None and url is None and ("http://" in line or "https://" in line):
             url = line.strip()
     if title is None:
         return None
-    content_start = 0
-    for index, line in enumerate(lines):
-        if line.startswith("[Source:"):
-            content_start = index + 1
-    content = "\n".join(lines[content_start:]).strip()
+    content = "\n".join(_strip_leading_metadata(lines[content_start:])).strip()
     if not content or content.startswith("No content available"):
         return None
-    return {"title": title, "url": url or "", "content": content}
+    parsed = {"title": title, "url": url or "", "content": content}
+    if details:
+        people["recent_editor_details"] = details
+        people["recent_editors"] = [entry["name"] for entry in details]
+    parsed.update(people)
+    return parsed
+
+
+_CONFLUENCE_METADATA_PREFIXES = (
+    "URL:",
+    "Owner:",
+    "Last modified by:",
+    "Recent editor:",
+    "Last modified:",
+    "Page id:",
+    "Parent:",
+    "Excerpt:",
+)
+
+
+def _parse_recent_editor(value: str) -> dict[str, str] | None:
+    """Parse ``<name> | <when> | <version>`` into structured editor metadata."""
+    parts = [part.strip() for part in (value or "").split("|")]
+    name = parts[0] if parts else ""
+    if not name:
+        return None
+    when = parts[1] if len(parts) > 1 else ""
+    version = parts[2] if len(parts) > 2 else ""
+    return {"name": name, "when": when, "version": version}
+
+
+def _strip_leading_metadata(lines: list[str]) -> list[str]:
+    """Drop the leading attribution/metadata header from a page body."""
+    start = 0
+    while start < len(lines):
+        stripped = lines[start].strip()
+        if not stripped:
+            start += 1
+            continue
+        if stripped.startswith(_CONFLUENCE_METADATA_PREFIXES) or stripped.startswith(
+            ("http://", "https://")
+        ):
+            start += 1
+            continue
+        break
+    return lines[start:]
 
 
 def parse_github_target(text: str) -> dict[str, Any] | None:
     """Parse ``[Source: GitHub: owner/repo[:path]]`` into metadata."""
-    for line in (text or "").splitlines():
+    for line in strip_retrieval_state(text or "").splitlines():
         if line.startswith("[Source: GitHub: "):
             raw = line[len("[Source: GitHub: "):].split("]", 1)[0].strip()
             if "#" in raw:
@@ -237,7 +320,7 @@ def parse_github_target(text: str) -> dict[str, Any] | None:
 def parse_sharepoint_items(text: str) -> list[dict[str, Any]]:
     """Parse SharePoint blocks (list/search/content) into item metadata dicts."""
     items: list[dict[str, Any]] = []
-    for block in re.split(r"\n{2,}", (text or "")):
+    for block in re.split(r"\n{2,}", strip_retrieval_state(text or "")):
         item: dict[str, Any] = {}
         for line in block.splitlines():
             if line.startswith("[Source: SharePoint:"):
@@ -260,6 +343,10 @@ def parse_sharepoint_items(text: str) -> list[dict[str, Any]]:
                     pass
             elif line.startswith("Modified: "):
                 item["modified"] = line[len("Modified: "):].strip()
+            elif line.startswith("Created by: "):
+                item["owner"] = line[len("Created by: "):].strip()
+            elif line.startswith("Modified by: "):
+                item["last_editor"] = line[len("Modified by: "):].strip()
             elif line.startswith("MimeType: "):
                 item["mime_type"] = line[len("MimeType: "):].strip()
             elif line.startswith("Parent: "):
@@ -283,7 +370,7 @@ def parse_sharepoint_items(text: str) -> list[dict[str, Any]]:
 def parse_github_code_search(text: str) -> list[dict[str, Any]]:
     """Parse ``search_code`` output into repo/path metadata pairs."""
     results: list[dict[str, Any]] = []
-    for block in re.split(r"\n{2,}", (text or "")):
+    for block in re.split(r"\n{2,}", strip_retrieval_state(text or "")):
         target = None
         url = ""
         for line in block.splitlines():

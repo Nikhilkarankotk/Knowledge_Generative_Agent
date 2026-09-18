@@ -110,6 +110,18 @@ export class Api {
     });
   }
 
+  // --- Dashboard API ---
+  getTopExperts(chatMessageId?: number): Observable<any> {
+    const params: Record<string, number> = {};
+    if (chatMessageId !== undefined && chatMessageId !== null) {
+      params['chatMessageId'] = chatMessageId;
+    }
+    return this.http.get<any>(`${this.backendUrl}/experts`, {
+      headers: this.getChatHeaders(false),
+      params
+    });
+  }
+
   // --- Export API ---
   getKnowledgeExportMetadata(chatMessageId: number): Observable<any> {
     return this.http.get<any>(`${this.backendUrl}/knowledge-export/${chatMessageId}`, {

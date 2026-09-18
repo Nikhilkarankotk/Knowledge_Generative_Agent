@@ -73,6 +73,122 @@ def html_to_text(markup: str) -> str:
     return parser.text()
 
 
+def _person_name(user: Any) -> str:
+    """Best-effort display name for a Confluence user object (never fabricated)."""
+    if not isinstance(user, dict):
+        return ""
+    for key in (
+        "displayName",
+        "publicName",
+        "name",
+        "username",
+        "email",
+        "accountId",
+        "userKey",
+    ):
+        value = str(user.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _person_account(user: Any) -> str:
+    """Stable account identifier for a Confluence user (used only for dedupe)."""
+    if not isinstance(user, dict):
+        return ""
+    for key in ("accountId", "userKey", "username", "email"):
+        value = str(user.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _editor_entries(values: Any) -> list[dict[str, str]]:
+    """Normalize version-history editor metadata into ordered, unique entries.
+
+    Accepts raw ``/version`` results (dicts with ``by``/``when``/``number``) or
+    already-normalized ``{name, when, version}`` dicts, or plain name strings.
+    Preserves the input order (newest version first) and deduplicates by account
+    id when present, falling back to the display name. Never fabricates a name.
+    """
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values or []:
+        if not isinstance(value, dict):
+            name = str(value or "").strip()
+            when = ""
+            number = ""
+            account = ""
+        elif "name" in value:
+            name = str(value.get("name") or "").strip()
+            when = str(value.get("when") or "").strip()
+            number = str(value.get("version") or value.get("number") or "").strip()
+            account = str(value.get("account") or "").strip()
+        else:
+            user = value.get("by")
+            name = _person_name(user)
+            when = str(value.get("when") or "").strip()
+            raw_number = value.get("number")
+            number = str(raw_number).strip() if raw_number is not None else ""
+            account = _person_account(user)
+        if not name:
+            continue
+        key = (account or name).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({"name": name, "when": when, "version": number})
+        if len(entries) >= _RECENT_EDITOR_LIMIT:
+            break
+    return entries
+
+
+def _editor_line(entry: dict[str, str]) -> str:
+    """One deterministic, parseable line per recent editor."""
+    parts = [entry["name"], entry.get("when") or "", entry.get("version") or ""]
+    return "Recent editor: " + " | ".join(parts).rstrip(" |")
+
+
+def _confluence_people_lines(
+    version: Any,
+    history: Any,
+    recent_editors: Any = None,
+) -> list[str]:
+    """Deterministic person metadata lines for capture (owner/editors, when known)."""
+    version = version if isinstance(version, dict) else {}
+    history = history if isinstance(history, dict) else {}
+    last_updated = history.get("lastUpdated")
+    last_updated = last_updated if isinstance(last_updated, dict) else {}
+    owner = _person_name(history.get("createdBy"))
+    editor = _person_name(last_updated.get("by")) or _person_name(version.get("by"))
+    when = str(last_updated.get("when") or version.get("when") or "").strip()
+    entries = _editor_entries(recent_editors)
+    if not entries and editor:
+        raw_number = version.get("number")
+        entries = [
+            {
+                "name": editor,
+                "when": when,
+                "version": str(raw_number) if raw_number is not None else "",
+            }
+        ]
+    lines: list[str] = []
+    if owner:
+        lines.append(f"Owner: {owner}")
+    if editor:
+        lines.append(f"Last modified by: {editor}")
+    lines.extend(_editor_line(entry) for entry in entries)
+    if when:
+        lines.append(f"Last modified: {when}")
+    return lines
+
+
+# How many page versions to inspect (newest first) and how many distinct recent
+# editors to keep. Version history is best-effort: a failure never fails the page.
+_VERSION_HISTORY_LIMIT = 10
+_RECENT_EDITOR_LIMIT = 5
+
+
 class ConfluenceService:
     """Thin wrapper around the Confluence ``/rest/api`` endpoints."""
 
@@ -175,7 +291,7 @@ class ConfluenceService:
             params={
                 "cql": cql,
                 "limit": max(1, limit),
-                "expand": "version,space,excerpt,ancestors",
+                "expand": "version,space,history,excerpt,ancestors",
             },
         )
         results = [item for item in payload.get("results", []) if isinstance(item, dict)]
@@ -303,7 +419,11 @@ class ConfluenceService:
 
         ranked = ranked[:limit_n]
         if not ranked:
-            return "No Confluence pages found matching the query."
+            return (
+                "No Confluence pages matched this query. This is not proof that "
+                "Confluence has no relevant documentation; retry with broader terms or "
+                "without a space scope."
+            )
         return self._render_search_results(ranked, query)
 
     def list_spaces(self, limit: int = 50) -> str:
@@ -321,11 +441,45 @@ class ConfluenceService:
         ]
         return "Available Confluence spaces:\n" + "\n".join(lines)
 
+    def recent_editor_versions(self, page_id: str) -> list[dict[str, str]]:
+        """Editors of the page's recent versions, newest first (best-effort).
+
+        Reads the real Confluence version history
+        (``GET /rest/api/content/{id}/version``) and returns one
+        ``{"name", "when", "version"}`` entry per distinct editor, preserving the
+        newest-first order. A failure (permissions, missing endpoint, network)
+        degrades to an empty list so it can never break page retrieval or
+        fabricate an identity.
+        """
+        page_id = (page_id or "").strip()
+        if not page_id:
+            return []
+        try:
+            payload = self._get_json(
+                f"rest/api/content/{page_id}/version",
+                params={"limit": _VERSION_HISTORY_LIMIT},
+            )
+        except ConfluenceApiError as exc:
+            logger.debug(
+                "Confluence version history unavailable for page %s: %s", page_id, exc
+            )
+            return []
+        results = payload.get("results") if isinstance(payload, dict) else None
+        entries = _editor_entries(results if isinstance(results, list) else [])
+        logger.debug(
+            "Confluence recent editors: page_id=%s editors=%r", page_id, entries
+        )
+        return entries
+
+    def recent_editor_names(self, page_id: str) -> list[str]:
+        """Display names of the page's recent version editors (newest first)."""
+        return [entry["name"] for entry in self.recent_editor_versions(page_id)]
+
     def get_page(self, page_id: str) -> str:
         """Full plain-text content of a Confluence page (with attribution)."""
         payload = self._get_json(
             f"rest/api/content/{page_id}",
-            params={"expand": "body.view,version,space"},
+            params={"expand": "body.view,version,space,history"},
         )
         title = str(payload.get("title") or "Unknown")
         url = self._page_url(payload)
@@ -334,7 +488,12 @@ class ConfluenceService:
         if not content:
             return f"No content available for Confluence page '{title}'."
         truncated = content[: self._page_char_limit]
-        return f"[Source: Confluence: {title}]\n{url}\n{truncated}"
+        recent_editors = self.recent_editor_versions(page_id)
+        people = _confluence_people_lines(
+            payload.get("version"), payload.get("history"), recent_editors
+        )
+        prefix = "\n".join([f"[Source: Confluence: {title}]", *people, url])
+        return f"{prefix}\n{truncated}"
 
     # -- formatting -------------------------------------------------------------
 
@@ -351,12 +510,17 @@ class ConfluenceService:
         excerpt = str(item.get("excerpt") or "").strip() or str(item.get("summary") or "").strip()
         header = f"[Source: Confluence: {title}]" + (f" (space: {space})" if space else "")
         lines = [header, f"Page id: {page_id}", f"URL: {url}"]
+        lines.extend(_confluence_people_lines(item.get("version"), item.get("history")))
         ancestors = item.get("ancestors") or []
         if isinstance(ancestors, list) and ancestors:
-            direct_parent = ancestors[-1]
-            parent_title = str(direct_parent.get("title") or "")
-            if parent_title:
-                lines.append(f"Parent: {parent_title}")
+            ancestor_titles = [
+                str(entry.get("title") or "").strip()
+                for entry in ancestors
+                if isinstance(entry, dict) and str(entry.get("title") or "").strip()
+            ]
+            if ancestor_titles:
+                lines.append(f"Parent: {ancestor_titles[-1]}")
+                lines.append("Ancestors: " + " > ".join(ancestor_titles))
         if excerpt:
             lines.append(f"Excerpt: {_cap(excerpt, 500)}")
         return "\n".join(lines)

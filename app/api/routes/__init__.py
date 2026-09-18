@@ -1,5 +1,5 @@
 """API route handlers."""
 
-from app.api.routes import chat, export, feedback, knowledge_export, mistral, rag
+from app.api.routes import chat, experts, export, feedback, knowledge_export, mistral, rag
 
-__all__ = ["chat", "export", "feedback", "knowledge_export", "mistral", "rag"]
+__all__ = ["chat", "experts", "export", "feedback", "knowledge_export", "mistral", "rag"]

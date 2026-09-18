@@ -96,13 +96,14 @@ class ChatService:
             max_messages=self._max_history,
         )
         capture = RetrievalCapture()
-        agent = self._semantic_kernel_factory.build_agent(
+        final_response = self._semantic_kernel_factory.run_turn(
+            user_message=user_message,
+            chat_history=history,
             rag_service=self._rag_service,
             session_id=session_id,
             confluence_service=self._confluence_service,
             capture=capture,
         )
-        final_response = self._semantic_kernel_factory.run_agent(agent, history)
 
         self._memory_service.add_exchange(session_id, user_message, final_response)
         assistant = self._save_assistant_message(session_id, final_response)

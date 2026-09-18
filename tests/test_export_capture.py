@@ -11,7 +11,47 @@ from app.export.capture import (
     parse_github_target,
     parse_rag_context,
     parse_sharepoint_items,
+    strip_retrieval_state,
 )
+
+_STATE_BLOCK = (
+    "\n\n=== CONFLUENCE RETRIEVAL STATE (authoritative evidence summary; machine-readable) ===\n"
+    "guidance text\n"
+    '{"source": "confluence", "evidence_found": true}\n'
+    "=== END CONFLUENCE RETRIEVAL STATE ==="
+)
+
+
+def test_strip_retrieval_state_removes_only_the_state_block() -> None:
+    text = "[Source: Confluence: Netflix]\nPage id: 1\nURL: https://wiki/1" + _STATE_BLOCK
+    stripped = strip_retrieval_state(text)
+    assert "RETRIEVAL STATE" not in stripped
+    assert "evidence_found" not in stripped
+    assert "Page id: 1" in stripped
+
+
+def test_confluence_parsers_ignore_retrieval_state_block() -> None:
+    search = (
+        "[Source: Confluence: Netflix System Design (space: ARCH)]\n"
+        "Page id: 9000\n"
+        "URL: https://wiki/9000\n"
+        "Excerpt: design"
+        + _STATE_BLOCK
+    )
+    (page,) = parse_confluence_search(search)
+    assert page["page_id"] == "9000"
+    assert page["title"] == "Netflix System Design"
+
+    page_text = (
+        "[Source: Confluence: Netflix System Design]\n"
+        "URL: https://wiki/9000\n"
+        "Design content"
+        + _STATE_BLOCK
+    )
+    parsed = parse_confluence_page(page_text)
+    assert parsed is not None
+    assert parsed["content"] == "Design content"
+    assert "RETRIEVAL STATE" not in parsed["content"]
 
 
 def test_parse_rag_context_splits_by_source_marker() -> None:
@@ -69,6 +109,86 @@ def test_parse_confluence_page_content() -> None:
 
 def test_parse_confluence_page_unknown_marker_returns_none() -> None:
     assert parse_confluence_page("no confluence source here") is None
+
+
+def test_parse_confluence_search_captures_people() -> None:
+    text = (
+        "[Source: Confluence: Payments (space: PAY)]\n"
+        "Page id: 5\n"
+        "URL: https://wiki/payments\n"
+        "Last modified by: Bob Ray\n"
+        "Last modified: 2026-01-02\n"
+        "Excerpt: payment flow\n"
+    )
+    (page,) = parse_confluence_search(text)
+    assert page["last_editor"] == "Bob Ray"
+    assert page["modified"] == "2026-01-02"
+
+
+def test_parse_confluence_page_captures_owner_and_strips_header() -> None:
+    text = (
+        "[Source: Confluence: Expenses]\n"
+        "Owner: Alice Doe\n"
+        "Last modified by: Bob Ray\n"
+        "Recent editor: Bob Ray | 2026-01-02T10:00:00Z | 3\n"
+        "Recent editor: Alice Doe | 2026-01-01T10:00:00Z | 1\n"
+        "https://wiki/expenses\n"
+        "Expense policy section one\n"
+        "Expense policy section two\n"
+    )
+    parsed = parse_confluence_page(text)
+    assert parsed is not None
+    assert parsed["owner"] == "Alice Doe"
+    assert parsed["last_editor"] == "Bob Ray"
+    assert parsed["recent_editors"] == ["Bob Ray", "Alice Doe"]
+    assert parsed["recent_editor_details"] == [
+        {"name": "Bob Ray", "when": "2026-01-02T10:00:00Z", "version": "3"},
+        {"name": "Alice Doe", "when": "2026-01-01T10:00:00Z", "version": "1"},
+    ]
+    assert parsed["url"] == "https://wiki/expenses"
+    assert parsed["content"].startswith("Expense policy section one")
+    assert "Owner:" not in parsed["content"]
+    assert "Recent editor:" not in parsed["content"]
+    assert "https://wiki/expenses" not in parsed["content"]
+
+
+def test_parse_confluence_search_captures_recent_editors() -> None:
+    text = (
+        "[Source: Confluence: Netflix System Design (space: ARCH)]\n"
+        "Page id: 9000\n"
+        "URL: https://wiki/9000\n"
+        "Owner: Nikhil Karankot\n"
+        "Last modified by: Tejaswinik\n"
+        "Recent editor: Tejaswinik | 2026-02-02T10:00:00Z | 2\n"
+        "Recent editor: Nikhil Karankot | 2026-01-01T10:00:00Z | 1\n"
+        "Last modified: 2026-02-02T10:00:00Z\n"
+        "Excerpt: design\n"
+    )
+    (page,) = parse_confluence_search(text)
+    assert page["owner"] == "Nikhil Karankot"
+    assert page["last_editor"] == "Tejaswinik"
+    assert page["recent_editors"] == ["Tejaswinik", "Nikhil Karankot"]
+    assert page["recent_editor_details"] == [
+        {"name": "Tejaswinik", "when": "2026-02-02T10:00:00Z", "version": "2"},
+        {"name": "Nikhil Karankot", "when": "2026-01-01T10:00:00Z", "version": "1"},
+    ]
+    assert page["modified"] == "2026-02-02T10:00:00Z"
+
+
+def test_parse_sharepoint_items_captures_people() -> None:
+    text = (
+        "[Source: SharePoint: policy.pdf]\n"
+        "URL: https://share/policy\n"
+        "Document id: 7\n"
+        "Created by: Alice Doe\n"
+        "Modified by: Bob Ray\n"
+        "MimeType: application/pdf\n"
+        "the policy says reset annually\n"
+    )
+    (item,) = parse_sharepoint_items(text)
+    assert item["owner"] == "Alice Doe"
+    assert item["last_editor"] == "Bob Ray"
+    assert "reset annually" in item["content"]
 
 
 def test_parse_github_target_variants() -> None:
