@@ -26,3 +26,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Demo notes (local only, not for the repo)
+DEMO.md
