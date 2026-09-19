@@ -211,10 +211,12 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     });
   }
 
-  private saveBlobFromResponse(res: any, fallbackName: string) {
-    const body = res.body as Blob | null;
-    if (!body) return;
-    const downloadUrl = URL.createObjectURL(body);
+exportConversation() {
+    const transcript = this.messages.length
+      ? this.messages.map((message) => `${message.role === 'user' ? 'You' : 'Ask PNC'}: ${message.content}`).join('\n\n')
+      : 'Ask PNC conversation\n\nNo messages to export yet.';
+    const blob = new Blob([transcript], { type: 'text/plain;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = downloadUrl;
     const disposition = (res.headers?.get('Content-Disposition') as string | undefined) || '';
@@ -224,6 +226,64 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 10000);
+  }
+
+  // --- Share Popover ---
+  shareOpen = false;
+  private shareTimer: any = null;
+
+  private cancelShareTimer() {
+    if (this.shareTimer !== null) {
+      clearTimeout(this.shareTimer);
+      this.shareTimer = null;
+    }
+  }
+
+  openShare() {
+    this.cancelShareTimer();
+    this.shareOpen = true;
+  }
+
+  toggleShare() {
+    this.cancelShareTimer();
+    this.shareOpen = !this.shareOpen;
+  }
+
+  scheduleShareClose() {
+    this.cancelShareTimer();
+    this.shareTimer = setTimeout(() => {
+      this.shareOpen = false;
+      this.cdr.detectChanges();
+    }, 150);
+  }
+
+  closeShare(returnFocus = false) {
+    this.cancelShareTimer();
+    this.shareOpen = false;
+    if (returnFocus) {
+      const btn = document.getElementById('shareBtn');
+      if (btn) btn.focus();
+    }
+  }
+
+  focusShareItem(index: number, event: Event) {
+    event.preventDefault();
+    const menu = document.getElementById('share-menu');
+    const items = menu ? Array.from(menu.querySelectorAll<HTMLButtonElement>('.share-option')) : [];
+    items[index]?.focus();
+  }
+
+  shareTo(target: 'teams' | 'outlook') {
+    this.closeShare();
+    const subject = 'Ask PNC conversation';
+    const transcript = this.messages.length
+      ? this.messages.map((m) => `${m.role === 'user' ? 'You' : 'Ask PNC'}: ${m.content}`).join('\n\n')
+      : 'Ask PNC conversation\n\nNo messages to share yet.';
+    if (target === 'outlook') {
+      window.open(`https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(transcript)}`, '_blank', 'noopener');
+    } else {
+      window.open('https://teams.microsoft.com/l/chat/0/0', '_blank', 'noopener');
+    }
   }
 
   // --- Action Methods ---

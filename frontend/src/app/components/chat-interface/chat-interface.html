@@ -1,4 +1,4 @@
-<div class="chat-container">
+<div class="chat-container" (document:click)="closeShare()">
 
   <!-- Messages Area -->
   <div class="messages-area" #chatContainer>
@@ -158,12 +158,22 @@
   <!-- Input Area -->
   <div class="input-area">
 <div class="copilot-tools">
-      <button type="button" (click)="exportKnowledge()" [disabled]="knowledgeExporting" [class.active]="knowledgeExported" title="Knowledge Export (ZIP of the sources used for the current answer)">
-        <span class="mini-spinner" *ngIf="knowledgeExporting"></span>
-        <span class="material-icons" *ngIf="!knowledgeExporting && !knowledgeExported">download</span>
-        <span class="material-icons" *ngIf="knowledgeExported">done</span>
-        Knowledge Export
-      </button>
+      <div class="share-wrap" (mouseenter)="openShare()" (mouseleave)="scheduleShareClose()" (click)="$event.stopPropagation()">
+        <button type="button" id="shareBtn" class="share-btn" (click)="toggleShare()" (keydown.escape)="closeShare()" (keydown.arrowdown)="focusShareItem(0, $event)" [attr.aria-expanded]="shareOpen" aria-haspopup="menu" aria-controls="share-menu" aria-label="Share this conversation">
+          <span class="material-icons">ios_share</span> Share
+        </button>
+        <div class="share-menu" id="share-menu" role="menu" aria-label="Share options" *ngIf="shareOpen">
+          <button type="button" class="share-option" role="menuitem" (click)="shareTo('teams')" (keydown.escape)="closeShare(true)" (keydown.arrowdown)="focusShareItem(1, $event)" (keydown.arrowup)="focusShareItem(0, $event)">
+            <span class="so-icon" style="background:rgba(98,100,167,.18)"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2.5" y="2.5" width="19" height="19" rx="4.5" fill="#6264A7"/><path d="M13.4 6v1.55h-2.55v8.75H9.1V7.55H6.5V6h6.9z" fill="#fff"/></svg></span>
+            <span>Share to Teams</span>
+          </button>
+          <button type="button" class="share-option" role="menuitem" (click)="shareTo('outlook')" (keydown.escape)="closeShare(true)" (keydown.arrowup)="focusShareItem(0, $event)" (keydown.arrowdown)="focusShareItem(1, $event)">
+            <span class="so-icon" style="background:rgba(0,120,212,.18)"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2.5" y="2.5" width="19" height="19" rx="4.5" fill="#0078D4"/><path d="M6.4 9h11.2v6.6H6.4V9z" fill="#fff"/><path d="M6.6 9.2l5.4 4.1 5.4-4.1" stroke="#0078D4" stroke-width="1.6" fill="none"/></svg></span>
+            <span>Share via Outlook</span>
+          </button>
+        </div>
+      </div>
+      <button type="button" (click)="exportConversation()"><span class="material-icons">download</span> Export</button>
     </div>
     <div class="input-container">
 
