@@ -1,6 +1,6 @@
 """Graphical architecture pages for the GitHub PDF report.
 
-Seven landscape pages are rendered straight from an :class:`ArchitectureModel`
+Eight landscape pages are rendered straight from an :class:`ArchitectureModel`
 (reportlab vector graphics - no bitmaps, no LLM text, no source-code dumps):
 
 1. Application Overview & High-Level Architecture (large layered diagram)
@@ -10,6 +10,8 @@ Seven landscape pages are rendered straight from an :class:`ArchitectureModel`
 5. Deployment Architecture (evidence only, or an honest "not mapped")
 6. Repository Structure & Code Flow (directory map + observed flow + areas)
 7. Security Architecture (controls observed in the repository, with evidence)
+8. Architecture Style & Mapping Tables (style banner + component/tech/endpoint
+   mapping tables, all evidence-backed)
 
 Every box carries evidence-backed content (operations, routes, owning types,
 referencing files) rather than an empty label. Layout constants were tuned
@@ -50,7 +52,7 @@ from app.export.architecture import (
     ArchitectureModel,
 )
 
-_NUM_PAGES = 7
+_NUM_PAGES = 8
 
 _MARGIN = 20.0
 # SimpleDocTemplate adds 6pt Frame padding on each side, so the *available*
@@ -101,6 +103,27 @@ KIND_STORE_COLORS: dict[str, tuple[colors.Color, colors.Color]] = {
 
 FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
+
+# Short, table-friendly labels for the mapping tables.
+_LAYER_SHORT: dict[str, str] = {
+    LAYER_CLIENT: "Client / UI",
+    LAYER_GATEWAY: "API / Gateway",
+    LAYER_SERVICES: "Services",
+    LAYER_DATA: "Data / Infra",
+    LAYER_EXTERNAL: "External",
+}
+
+_KIND_SHORT: dict[str, str] = {
+    KIND_CLIENT: "Frontend",
+    KIND_GATEWAY: "Entry point",
+    KIND_CONTROLLER: "API controller",
+    KIND_SERVICE: "Service",
+    KIND_DATABASE: "Database",
+    KIND_CACHE: "Cache",
+    KIND_MESSAGE_BROKER: "Message broker",
+    KIND_EXTERNAL: "External API",
+    KIND_CROSS_CUTTING: "Cross-cutting",
+}
 
 # ── primitive helpers ------------------------------------------------------
 
@@ -1197,11 +1220,183 @@ def _page_security_architecture(model: ArchitectureModel) -> Drawing:
     return d
 
 
+# ── Page 8 · Architecture Style & Mapping Tables -----------------------------
+
+
+def _grid_table(d: Drawing, x: float, top: float, width: float, *,
+                title: str, headers: Sequence[str], rows: Sequence[Sequence[str]],
+                col_ratios: Sequence[float], accent: colors.Color,
+                empty_text: str = "None observed in the sampled repository.",
+                header_size: float = 6.4, cell_size: float = 6.0,
+                row_h: float = 14.0, max_rows: int = 12) -> float:
+    """Draw a titled, zebra-striped mapping table. Returns its bottom Y."""
+    title_h = 15.0
+    _rrect(d, x, top - title_h, width, title_h, r=3, fill=accent, stroke=accent)
+    _text(d, x + 7, top - title_h + 4.5, title, size=7.2, font=FONT_BOLD, color=WHITE)
+
+    # Column geometry from ratios.
+    ratio_sum = sum(col_ratios) or 1.0
+    inner_w = width - 8.0
+    xs: list[float] = [x + 4.0]
+    for ratio in col_ratios:
+        xs.append(xs[-1] + inner_w * (ratio / ratio_sum))
+
+    # Header row.
+    head_y = top - title_h - row_h
+    _rrect(d, x, head_y, width, row_h, r=0, fill=LIGHT_GREY, stroke=BORDER_LIGHT, stroke_width=0.5)
+    for index, header in enumerate(headers):
+        cell_w = xs[index + 1] - xs[index] - 6
+        _text(d, xs[index] + 2, head_y + 4.0, _fit(header, header_size, cell_w, 1, header),
+              size=header_size, font=FONT_BOLD, color=NAVY)
+
+    body_rows = list(rows)[:max_rows]
+    cursor = head_y
+    if not body_rows:
+        cursor -= row_h
+        _rrect(d, x, cursor, width, row_h, r=0, fill=WHITE, stroke=BORDER_LIGHT, stroke_width=0.4)
+        _text(d, xs[0] + 2, cursor + 4.0, empty_text, size=cell_size, color=MUTED)
+        _rrect(d, x, cursor, width, top - cursor, r=3, fill=None, stroke=accent, stroke_width=0.8)
+        return cursor
+    for r_index, row in enumerate(body_rows):
+        cursor -= row_h
+        fill = SOFT if r_index % 2 else WHITE
+        _rrect(d, x, cursor, width, row_h, r=0, fill=fill, stroke=BORDER_LIGHT, stroke_width=0.4)
+        for c_index, cell in enumerate(row):
+            if c_index >= len(xs) - 1:
+                break
+            cell_w = xs[c_index + 1] - xs[c_index] - 6
+            font = FONT_BOLD if c_index == 0 else FONT
+            color = INK if c_index == 0 else GREY
+            _text(d, xs[c_index] + 2, cursor + 4.0, _fit(str(cell), cell_size, cell_w, 1, str(cell)),
+                  size=cell_size, font=font, color=color)
+    total = len(rows)
+    if total > max_rows:
+        cursor -= 9.0
+        _text(d, xs[0] + 2, cursor + 2.0, f"+{total - max_rows} more not shown",
+              size=5.6, font=FONT_BOLD, color=accent)
+    # Outer border around the whole table.
+    _rrect(d, x, cursor, width, top - cursor, r=3, fill=None, stroke=accent, stroke_width=0.8)
+    return cursor
+
+
+def _style_signals(model: ArchitectureModel) -> list[tuple[str, str]]:
+    """Evidence-backed signals that justify the inferred architectural style."""
+    signals: list[tuple[str, str]] = []
+    controllers = model.by_kind(KIND_CONTROLLER)
+    services = model.by_kind(KIND_SERVICE)
+    clients = model.by_kind(KIND_CLIENT)
+    externals = model.by_kind(KIND_EXTERNAL)
+    dbs = model.by_kind(KIND_DATABASE)
+    caches = model.by_kind(KIND_CACHE)
+    brokers = model.by_kind(KIND_MESSAGE_BROKER)
+    if clients:
+        signals.append(("Presentation tier", f"{len(clients)} client/UI component(s)"))
+    if controllers:
+        signals.append(("API surface", f"{len(controllers)} controller(s) exposing HTTP routes"))
+    if services:
+        signals.append(("Service layer", f"{len(services)} service/module component(s)"))
+    if dbs:
+        signals.append(("Persistence", f"{len(dbs)} relational/document store(s)"))
+    if caches:
+        signals.append(("Caching tier", f"{len(caches)} in-memory store(s)"))
+    if brokers:
+        signals.append(("Asynchronous messaging", f"{len(brokers)} message broker(s) → event-driven traits"))
+    if externals:
+        signals.append(("External integrations", f"{len(externals)} third-party service(s)"))
+    if model.protocols:
+        signals.append(("Communication", ", ".join(model.protocols[:4])))
+    return signals
+
+
+def _page_mapping_tables(model: ArchitectureModel) -> Drawing:
+    d = _new_page(8, "Architecture Style & Mapping Tables", model.repo)
+
+    top = PAGE_H - 46.0
+    bottom = 34.0
+
+    # ── Style banner ────────────────────────────────────────────────────────
+    banner_h = 26.0
+    style_label = model.style or "Architecture style not inferred"
+    _rrect(d, 14, top - banner_h, PAGE_W - 28, banner_h, r=4, fill=LIGHT_BLUE, stroke=NAVY, stroke_width=0.9)
+    _text(d, 22, top - 11, "Architectural style", size=6.8, font=FONT_BOLD, color=MUTED)
+    _text(d, 22, top - 21, _fit(style_label, 11.0, PAGE_W - 320, 1, style_label),
+          size=11.0, font=FONT_BOLD, color=NAVY)
+    signals = _style_signals(model)
+    if signals:
+        sig_x = PAGE_W - 300
+        _text(d, sig_x, top - 8, "Why this style (evidence)", size=6.2, font=FONT_BOLD, color=NAVY)
+        chip_y = top - 20
+        _text(d, sig_x, chip_y, _fit("  ·  ".join(f"{k}: {v}" for k, v in signals[:3]),
+                                     5.6, 286, 1, ""), size=5.6, color=INK)
+
+    grid_top = top - banner_h - 12.0
+    col_gap = 16.0
+    col_w = (PAGE_W - 28 - col_gap) / 2
+    left_x = 14.0
+    right_x = 14.0 + col_w + col_gap
+
+    # ── Left column: components → layer, and style signals ──────────────────
+    comp_rows = [
+        [c.name, _LAYER_SHORT.get(c.layer, c.layer), _KIND_SHORT.get(c.kind, c.kind), c.primary_evidence]
+        for c in model.components
+    ]
+    y_left = _grid_table(
+        d, left_x, grid_top, col_w,
+        title="Component → Layer → Type mapping",
+        headers=["Component", "Layer", "Type", "Evidence"],
+        rows=comp_rows, col_ratios=[2.4, 1.8, 1.6, 2.6], accent=NAVY, max_rows=13,
+        empty_text="No components were detected.",
+    )
+
+    signal_rows = [[k, v] for k, v in signals]
+    _grid_table(
+        d, left_x, y_left - 12.0, col_w,
+        title="Architectural style signals",
+        headers=["Signal", "Observation"],
+        rows=signal_rows, col_ratios=[1.5, 3.0], accent=TEAL, max_rows=5,
+        empty_text="No distinctive style signals were observed.",
+    )
+
+    # ── Right column: tech → category, endpoints → controller ───────────────
+    tech_rows = [
+        [t.name, t.category, ", ".join(t.evidence[:2]) or "-"]
+        for t in model.technologies
+    ]
+    y_right = _grid_table(
+        d, right_x, grid_top, col_w,
+        title="Technology → Category mapping",
+        headers=["Technology", "Category", "Evidence"],
+        rows=tech_rows, col_ratios=[1.8, 2.0, 2.4], accent=GREEN, max_rows=9,
+        empty_text="No technologies were detected in the sampled files.",
+    )
+
+    endpoint_rows: list[list[str]] = []
+    for controller in sorted(model.by_kind(KIND_CONTROLLER),
+                             key=lambda c: (-(c.detail.get("routes", 0) or 0), c.name)):
+        for endpoint in [str(e) for e in (controller.detail.get("endpoints") or [])][:4]:
+            endpoint_rows.append([endpoint, controller.name, controller.primary_evidence])
+        if not (controller.detail.get("endpoints") or []):
+            endpoint_rows.append(["(routes not enumerated)", controller.name, controller.primary_evidence])
+    _grid_table(
+        d, right_x, y_right - 12.0, col_w,
+        title="Endpoint → Controller mapping",
+        headers=["Endpoint / route", "Controller", "Evidence"],
+        rows=endpoint_rows, col_ratios=[2.4, 2.0, 2.2], accent=BLUE, max_rows=9,
+        empty_text="No HTTP endpoints were detected (no API controllers).",
+    )
+
+    _note_line(d, 14, bottom,
+               "All rows are derived from repository artefacts; anything not observed is omitted rather than assumed.",
+               PAGE_W - 28)
+    _footer(d, 8, model)
+    return d
+
+
 # ── public entry point --------------------------------------------------------
 
 
 def architecture_pages(model: ArchitectureModel) -> list[Drawing]:
-    """Return the seven graphical pages (in order) for the architecture report."""
+    """Return the eight graphical pages (in order) for the architecture report."""
     return [
         _page_application_architecture(model),
         _page_component_communication(model),
@@ -1210,6 +1405,7 @@ def architecture_pages(model: ArchitectureModel) -> list[Drawing]:
         _page_deployment_architecture(model),
         _page_repository_structure(model),
         _page_security_architecture(model),
+        _page_mapping_tables(model),
     ]
 
 

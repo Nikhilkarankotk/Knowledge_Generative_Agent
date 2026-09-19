@@ -61,18 +61,18 @@ def _collect_strings(drawing: Drawing, out: list[str]) -> None:
             _collect_strings(child, out)
 
 
-def test_architecture_pages_returns_seven() -> None:
+def test_architecture_pages_returns_eight() -> None:
     pages = architecture_pages(_sample_model())
-    assert len(pages) == 7
+    assert len(pages) == 8
     for page in pages:
         assert 0 < page.width <= 790
         assert 0 < page.height <= 540
 
 
-def test_render_produces_landscape_a4_seven_page_pdf() -> None:
+def test_render_produces_landscape_a4_eight_page_pdf() -> None:
     data = render_architecture_document(_sample_model(), repo_url="https://github.com/acme/api")
     assert data.startswith(b"%PDF")
-    assert _pdf_page_count(data) == 7
+    assert _pdf_page_count(data) == 8
     assert b"841.8898 595.2756" in data  # landscape A4 media box
 
 
@@ -80,7 +80,7 @@ def test_empty_model_renders() -> None:
     empty = ArchitectureModel(repo="empty/repo")
     data = render_architecture_document(empty, repo_url=None)
     assert data.startswith(b"%PDF")
-    assert _pdf_page_count(data) == 7
+    assert _pdf_page_count(data) == 8
 
 
 def test_pages_contain_no_source_code_dump() -> None:
@@ -105,7 +105,7 @@ def test_pdf_exporter_renders_graphical_pdf_when_model_present() -> None:
     )
     data = PdfExporter().render(payload)
     assert data.startswith(b"%PDF")
-    assert _pdf_page_count(data) == 7
+    assert _pdf_page_count(data) == 8
 
 
 def test_pdf_exporter_falls_back_to_text_pdf_without_model() -> None:
@@ -117,7 +117,7 @@ def test_pdf_exporter_falls_back_to_text_pdf_without_model() -> None:
     )
     data = PdfExporter().render(payload)
     assert data.startswith(b"%PDF")
-    assert _pdf_page_count(data) != 7
+    assert _pdf_page_count(data) != 8
 
 
 class FakeGitHub:
@@ -161,7 +161,7 @@ def test_build_github_analysis_model_survives_render() -> None:
     )
     assert payload.architecture is not None
     data = PdfExporter().render(payload)
-    assert _pdf_page_count(data) == 7
+    assert _pdf_page_count(data) == 8
 
 
 def test_render_contains_security_and_tree_content() -> None:

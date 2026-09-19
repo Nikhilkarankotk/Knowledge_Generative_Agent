@@ -1255,15 +1255,76 @@ def _extract_description(repo_meta: str, readme: str) -> str:
 
 
 def _infer_style(components: list[ArchitectureComponent]) -> str:
-    kinds = {component.kind for component in components}
-    if KIND_MESSAGE_BROKER in kinds:
-        return "Event-driven · message bus"
-    services = len([c for c in components if c.kind == KIND_SERVICE])
-    if services >= 3:
-        return "Service-oriented · multi-module"
-    if KIND_DATABASE in kinds:
-        return "Layered · data-backed"
-    return "Modular backend"
+    """Classify the architectural style from the observed component composition.
+
+    Returns a professional, two-part label ``"Primary style · qualifier"`` where
+    the primary names a recognised architectural pattern and the qualifier adds
+    the most salient supporting trait. Everything is derived from what was
+    actually detected in the repository - never assumed.
+    """
+    kinds = [component.kind for component in components]
+    kind_set = set(kinds)
+
+    controllers = kinds.count(KIND_CONTROLLER)
+    services = kinds.count(KIND_SERVICE)
+    clients = kinds.count(KIND_CLIENT)
+    externals = kinds.count(KIND_EXTERNAL)
+    has_db = KIND_DATABASE in kind_set
+    has_cache = KIND_CACHE in kind_set
+    has_broker = KIND_MESSAGE_BROKER in kind_set
+    has_gateway = KIND_GATEWAY in kind_set
+
+    # Detect layer coverage (client / gateway / services / data) - a full stack
+    # of distinct layers is the hallmark of a layered / n-tier design.
+    layers = {component.layer for component in components}
+    layered = {LAYER_GATEWAY, LAYER_SERVICES, LAYER_DATA} <= layers
+
+    # --- Primary style ------------------------------------------------------
+    if has_broker and services >= 2:
+        primary = "Event-driven microservices" if services >= 4 else "Event-driven architecture"
+    elif has_broker:
+        primary = "Event-driven architecture"
+    elif services >= 5 and controllers >= 3:
+        primary = "Microservices architecture"
+    elif services >= 3:
+        primary = "Service-oriented architecture"
+    elif clients and controllers and has_db:
+        primary = "Layered n-tier web application" if layered else "Client-server web application"
+    elif layered:
+        primary = "Layered (n-tier) architecture"
+    elif controllers and services and has_db:
+        primary = "Layered backend service"
+    elif controllers and services:
+        primary = "REST API service"
+    elif controllers:
+        primary = "API-first backend"
+    elif services:
+        primary = "Modular service backend"
+    else:
+        primary = "Modular application"
+
+    # --- Qualifier (most salient supporting trait) --------------------------
+    qualifiers: list[str] = []
+    if has_broker:
+        qualifiers.append("asynchronous messaging")
+    if has_cache and has_db:
+        qualifiers.append("cached data tier")
+    elif has_db:
+        qualifiers.append("relational data tier")
+    elif has_cache:
+        qualifiers.append("in-memory store")
+    if externals >= 3:
+        qualifiers.append("integration-heavy")
+    elif externals:
+        qualifiers.append("externally integrated")
+    if clients and controllers:
+        qualifiers.append("full-stack")
+    if not qualifiers and services:
+        qualifiers.append("multi-module")
+
+    if qualifiers:
+        return f"{primary} · {qualifiers[0]}"
+    return primary
 
 
 _AREA_PURPOSES: tuple[tuple[set[str], str], ...] = (

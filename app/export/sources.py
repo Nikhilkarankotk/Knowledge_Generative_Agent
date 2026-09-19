@@ -93,7 +93,49 @@ _KEY_BUILD_FILES = (
     ".github/workflows/ci.yml",
     ".gitlab-ci.yml",
     "Jenkinsfile",
+    "azure-pipelines.yml",
+    "azure-pipelines.yaml",
+    ".travis.yml",
+    "bitbucket-pipelines.yml",
+    "cloudbuild.yaml",
+    "buildspec.yml",
+    "Procfile",
+    "app.yaml",
+    "serverless.yml",
+    "serverless.yaml",
+    "skaffold.yaml",
+    "Chart.yaml",
+    "values.yaml",
+    "Makefile",
 )
+
+
+def _is_deployment_artifact(path: str) -> bool:
+    """CI/CD, container, orchestration and infrastructure files that describe how
+    the application is built, shipped and run. They are fetched alongside the
+    build manifests so the deployment and pipeline analysis is evidence-based."""
+    lower = (path or "").lower()
+    base = lower.rsplit("/", 1)[-1]
+    if lower.startswith((".github/workflows/", ".circleci/", ".gitlab/")) and lower.endswith(
+        (".yml", ".yaml")
+    ):
+        return True
+    if base.startswith("dockerfile") or base.endswith(".dockerfile"):
+        return True
+    if base.startswith(("docker-compose", "compose.")) and base.endswith((".yml", ".yaml")):
+        return True
+    if base.endswith((".tf", ".tfvars")):
+        return True
+    if base.startswith("jenkinsfile"):
+        return True
+    segments = lower.split("/")
+    if lower.endswith((".yml", ".yaml")) and any(
+        seg in {"k8s", "kubernetes", "manifests", "helm", "charts", "deploy", "deployment", "deployments", "infra", "infrastructure"}
+        for seg in segments[:-1]
+    ):
+        return True
+    return False
+
 
 _CODE_EXTENSIONS = (
     ".py",
@@ -303,7 +345,7 @@ def resolve_sources(
             if source is not None:
                 source.structure = detect_structure(source.content or "")
                 resolved_list.append(source)
-        return resolved_list
+        return _dedupe_sources(resolved_list)
     resolved: list[ResolvedSource | None] = [None] * len(items)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
@@ -316,7 +358,43 @@ def resolve_sources(
             if source is not None:
                 source.structure = detect_structure(source.content or "")
                 resolved[index] = source
-    return [source for source in resolved if source is not None]
+    return _dedupe_sources([source for source in resolved if source is not None])
+
+
+def _dedupe_sources(resolved: list[ResolvedSource]) -> list[ResolvedSource]:
+    """Collapse resolved sources that refer to the same logical artifact.
+
+    Retrieval frequently returns several chunks of the *same* page/document (same
+    ``source_type`` + ``source_id``). For export purposes they are one source, so
+    they are merged into a single :class:`ResolvedSource`: text content is
+    concatenated (de-duplicated, order preserved) while native-byte sources are
+    kept as-is. This is what makes a single-source answer export as one formatted
+    document (PDF) instead of a multi-artifact ZIP.
+    """
+    merged: dict[tuple[str, str], ResolvedSource] = {}
+    order: list[tuple[str, str]] = []
+    for source in resolved:
+        key = (source.source_type or "", source.source_id or "")
+        # Sources without a stable id (or holding native bytes) are never merged;
+        # each is a distinct artifact and must round-trip independently.
+        if not key[1] or source.has_native_bytes:
+            unique_key = (key[0], f"{key[1]}::{id(source)}")
+            merged[unique_key] = source
+            order.append(unique_key)
+            continue
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = source
+            order.append(key)
+            continue
+        existing_text = existing.content or ""
+        addition = source.content or ""
+        if addition and addition not in existing_text:
+            existing.content = f"{existing_text}\n\n{addition}".strip() if existing_text else addition
+            existing.structure = detect_structure(existing.content)
+        if not existing.source_url and source.source_url:
+            existing.source_url = source.source_url
+    return [merged[key] for key in order]
 
 
 _MAX_RESOLVE_WORKERS = 4
@@ -665,13 +743,15 @@ def build_github_analysis(
     file_paths = [entry["path"] for entry in tree if entry.get("type") == "file"]
 
     # Build/dependency files
+    key_build_lower = {name.lower() for name in _KEY_BUILD_FILES}
     build_files: list[str] = [
         path
         for path in file_paths
         if not _is_noise(path)
         and (
-            path.rsplit("/", 1)[-1].lower() in _KEY_BUILD_FILES
+            path.rsplit("/", 1)[-1].lower() in key_build_lower
             or path.lower().endswith((".gradle", "pom.xml"))
+            or _is_deployment_artifact(path)
         )
     ]
 
