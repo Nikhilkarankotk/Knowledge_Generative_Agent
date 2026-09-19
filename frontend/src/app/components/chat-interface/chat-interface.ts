@@ -86,6 +86,9 @@ export class ChatInterface implements AfterViewChecked, OnInit {
   knowledgeExported = false;
   knowledgeExportError: string | null = null;
 
+  // Share State (Teams / Outlook)
+  shareMenuOpen = false;
+
   @ViewChild('chatContainer') private chatContainer!: ElementRef;
   @ViewChild('fileInput') private fileInput!: ElementRef;
 
@@ -268,6 +271,57 @@ export class ChatInterface implements AfterViewChecked, OnInit {
     } catch {
       return fallback;
     }
+  }
+
+  // --- Share Methods (Teams / Outlook) ---
+  toggleShareMenu() {
+    this.shareMenuOpen = !this.shareMenuOpen;
+  }
+
+  closeShareMenu() {
+    this.shareMenuOpen = false;
+  }
+
+  private buildShareContent(): { title: string; body: string } {
+    const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant');
+    const title = 'Knowledge Generative Agent';
+    let body = lastAssistant?.content?.trim() || 'Check out this answer from the Knowledge Generative Agent.';
+    // Keep the body within safe URL length limits (deep links / mailto can truncate very long text).
+    const MAX_LEN = 1800;
+    if (body.length > MAX_LEN) {
+      body = body.slice(0, MAX_LEN) + '\n\n… (truncated)';
+    }
+    return { title, body };
+  }
+
+  private openShareLink(url: string) {
+    // Open ONLY in a new tab and never navigate the current page.
+    // window.open with _blank guarantees the current tab is untouched.
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  shareWithTeams(event?: Event) {
+    // Stop any default/bubbling behaviour that could navigate the current page.
+    event?.preventDefault();
+    event?.stopPropagation();
+    const { body } = this.buildShareContent();
+    // Teams "Share to Teams" launcher — only pass the message text so the
+    // launcher opens in the new tab and never redirects the current page.
+    const url = `https://teams.microsoft.com/l/share?msgText=${encodeURIComponent(body)}`;
+    this.openShareLink(url);
+    this.closeShareMenu();
+  }
+
+  shareWithOutlook(event?: Event) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const { title, body } = this.buildShareContent();
+    // Outlook on the web compose deep link, pre-filled with subject + body.
+    const url =
+      `https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent(title)}` +
+      `&body=${encodeURIComponent(body)}`;
+    this.openShareLink(url);
+    this.closeShareMenu();
   }
 
   private saveBlobFromResponse(res: any, fallbackName: string) {

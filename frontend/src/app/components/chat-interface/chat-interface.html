@@ -158,6 +158,24 @@
   <!-- Input Area -->
   <div class="input-area">
 <div class="copilot-tools">
+      <!-- Share Button with Teams / Outlook menu -->
+      <div class="share-wrapper" (mouseleave)="closeShareMenu()">
+        <button type="button" class="share-btn" (click)="toggleShareMenu()" [class.active]="shareMenuOpen" title="Share">
+          <span class="material-icons">share</span>
+          Share
+        </button>
+        <div class="share-menu" *ngIf="shareMenuOpen">
+          <button type="button" class="share-menu-item" (click)="shareWithTeams($event)" title="Share with Teams">
+            <span class="material-icons">groups</span>
+            Share with Teams
+          </button>
+          <button type="button" class="share-menu-item" (click)="shareWithOutlook($event)" title="Share with Outlook">
+            <span class="material-icons">mail</span>
+            Share with Outlook
+          </button>
+        </div>
+      </div>
+
       <button type="button" (click)="exportKnowledge()" [disabled]="knowledgeExporting" [class.active]="knowledgeExported" title="Knowledge Export (ZIP of the sources used for the current answer)">
         <span class="mini-spinner" *ngIf="knowledgeExporting"></span>
         <span class="material-icons" *ngIf="!knowledgeExporting && !knowledgeExported">download</span>

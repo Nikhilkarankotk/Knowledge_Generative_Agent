@@ -33,3 +33,13 @@
 .no-history .material-icons { animation: copilot-float 3.5s ease-in-out infinite; }
 @media (max-width: 600px) { .copilot-welcome .suggestion-chips { grid-template-columns: 1fr; }.copilot-welcome h2 { font-size: 24px; } }
 @media (max-height: 800px) { .messages-area { padding: 16px 28px; } .copilot-welcome { padding: 26px 18px 18px; } .input-area { padding: 10px 24px 14px; } .copilot-tools { margin-bottom: 6px; } }
+
+/* --- Share button (Teams / Outlook) --- */
+.share-wrapper { position: relative; display: inline-flex; }
+.share-wrapper .share-btn.active { background: rgba(56, 90, 155, .65); color: #fff; }
+.share-menu { position: absolute; bottom: calc(100% + 6px); right: 0; min-width: 190px; padding: 6px; background: rgba(22, 34, 59, .99); border: 1px solid rgba(135, 166, 226, .28); border-radius: 10px; box-shadow: 0 12px 30px rgba(6, 14, 32, .55); display: flex; flex-direction: column; gap: 4px; z-index: 40; animation: share-menu-in .16s ease both; }
+@keyframes share-menu-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.copilot-tools .share-menu button.share-menu-item { width: 100%; justify-content: flex-start; overflow: visible; border: 0; border-radius: 7px; padding: 8px 10px; background: transparent; color: #cdd9ef; font-size: 12px; }
+.copilot-tools .share-menu button.share-menu-item:hover { background: rgba(56, 90, 155, .6); color: #fff; transform: none; box-shadow: none; }
+.copilot-tools .share-menu button.share-menu-item::after { display: none; }
+.copilot-tools .share-menu .material-icons { font-size: 16px; }
