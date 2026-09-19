@@ -1,0 +1,92 @@
+﻿# ---- Application ----
+APP_NAME=Users
+HOST=0.0.0.0
+PORT=8080
+LOG_LEVEL=INFO
+
+# ---- Database (matches src/main/resources/application.yml) ----
+DB_DRIVER=postgresql
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=Knowledge_Gen_Agent
+DB_USER=postgres
+DB_PASSWORD=postgressql
+# Optional full override (takes precedence over the individual DB_* variables):
+# DATABASE_URL=postgresql://postgres:postgres@localhost:5433/portfolio_chatbot
+# Set to true to echo SQL (mirrors spring.jpa.show-sql: true)
+DB_ECHO_SQL=false
+
+# ---- Mistral AI ----
+MISTRAL_API_KEY=9T56uAAR2CgS1AHfyKdlzfDiuwvUoZQt
+MISTRAL_BASE_URL=https://api.mistral.ai/v1
+MISTRAL_CHAT_MODEL=open-mistral-nemo
+MISTRAL_EMBEDDING_MODEL=mistral-embed
+MISTRAL_OCR_MODEL=mistral-ocr-latest
+MISTRAL_TIMEOUT_SECONDS=30
+MISTRAL_RETRIES=3
+
+# ---- RAG ----
+RAG_CHUNK_SIZE=500
+RAG_TOP_K=5
+
+# ---- Conversation memory ----
+CONVERSATION_MAX_HISTORY=10
+
+# ---- CORS (comma-separated) ----
+CORS_ORIGINS=["http://localhost:4200"]
+
+# ---- Confluence (ConfluencePlugin, Phase 1) ----
+# Atlassian API token + email (HTTP Basic, matches curl -u email:token).
+# Base URL is the workspace prefix ABOVE /rest/api.
+CONFLUENCE_ENABLED=true
+CONFLUENCE_BASE_URL=https://knowledgegenagent.atlassian.net/wiki/
+CONFLUENCE_API_TOKEN=ATATT3xFfGF01Rw6WjTWOdkcJGlxGntmHp2qDei_hocppxvN0wxKToEzE2U_QEjWVKkps8IDP5xNTioXAtM41l-uFLV5H65gRRrmEUuTts5ZWDnAdwfsR1WNYBiNPArxcPmbwlzW-FTXyEOnCpNmr4qIcCWYr-G_krkmOUn94cGyLvttqtz7Abw=1C3C0CD2
+CONFLUENCE_USERNAME=nikhilkarankot@knowledgegenagent.onmicrosoft.com
+CONFLUENCE_LIMIT=5
+CONFLUENCE_TIMEOUT_SECONDS=15
+CONFLUENCE_PAGE_CHAR_LIMIT=15000
+
+# ---- Knowledge Generative Agent (Semantic Kernel, Phase 1) ----
+SK_AGENT_ENABLED=true
+SK_MAX_AUTO_INVOKE_ATTEMPTS=10
+SK_AGENT_TIMEOUT_SECONDS=120
+# ---- GitHub (GitHubPlugin, Phase 2) ----
+# Read-only integration using a fine-grained personal access token.
+GITHUB_ENABLED=true
+OPENROUTER_API_KEY=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
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+GITHUB_LLM_PROVIDER=openrouter
+GITHUB_LLM_MODEL= openrouter/free
+OPENROUTER_TIMEOUT_SECONDS=60
+OPENROUTER_RETRIES=2
+GITHUB_ANALYSIS_MAX_FILES=40
+GITHUB_ANALYSIS_MAX_CONTEXT_CHARS=60000
+GITHUB_ANALYSIS_MAX_TOKENS=3000
+GITHUB_ANALYSIS_TEMPERATURE=0.1
+GITHUB_TOKEN=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
+GITHUB_BASE_URL=https://api.github.com/
+GITHUB_ALLOWED_REPOSITORIES=nikhilkarankotk/Knowledge_Generative_Agent, nikhilkarankotk/E-commerce_Application, nikhilkarankotk/DSA_Preparation, nikhilkarankotk/NikhilKarankotk, nikhilkarankotk/My_Portfolio, nikhilkarankotk/Portfolio-Chatbot-Assistant, nikhilkarankotk/Job_Portal_Web_Application, nikhilkarankotk/Java_Design_Patterns, nikhilkarankotk/Mapping_Startegies_Hibernate, nikhilkarankotk/Java_8_Features, nikhilkarankotk/n8n, nikhilkarankotk/vibe-link-design, nikhilkarankotk/Kafka_Setup, nikhilkarankotk/FAANG-Coding-Interview-Questions, nikhilkarankotk/OpenAI-Intgeration-with-Spring-Boot, nikhilkarankotk/Routing_Service, nikhilkarankotk/Microservices_udemy_2, nikhilkarankotk/Microservices_Udemy, nikhilkarankotk/MqlContainer-Docker-Compose, nikhilkarankotk/v2-spring-cloud-config, nikhilkarankotk/ms-config-main, nikhilkarankotk/Subscription_Manager, nikhilkarankotk/JwtImpl, nikhilkarankotk/express
+GITHUB_LIMIT=5
+GITHUB_TIMEOUT_SECONDS=15
+GITHUB_REPO_CHAR_LIMIT=10000
+
+# ---- SharePoint Online (SharePointPlugin, Phase 3) ----
+SHAREPOINT_ENABLED=true
+# Tenant-wide mode is ON: the agent may search and read every SharePoint site and
+# document the application's Microsoft Graph permission can access (requires the
+# Entra app to hold Sites.Read.All / Files.Read.All with admin consent for the
+# Microsoft Graph Search JSON API; Sites.Selected alone does not authorize it).
+# Scoped fields (site hostname/path + allowlists) are kept below but not enforced.
+SHAREPOINT_TENANT_WIDE=true
+SHAREPOINT_SEARCH_REGION=IND
+SHAREPOINT_TENANT_ID=0b2de440-83b5-4559-a88f-b1c14a4a85d1
+SHAREPOINT_CLIENT_ID=03bb5f3c-f0ae-4903-88ef-fe7179d1d2fd
+SHAREPOINT_CLIENT_SECRET=dkg8Q~p6rFOXA2al1EJnQQuoEwA4oHtKSYfdiaE0
+SHAREPOINT_GRAPH_BASE_URL=https://graph.microsoft.com/v1.0
+SHAREPOINT_ALLOWED_SITES=knowledgegenagent.sharepoint.com,438af0af-fed2-4470-9ac8-7216f61117c9,25126283-31b9-43ca-8dfa-c9168ad08501
+SHAREPOINT_SITE_HOSTNAME=knowledgegenagent.sharepoint.com
+SHAREPOINT_SITE_RELATIVE_PATH=/sites/KnowledgeGenAgent
+SHAREPOINT_ALLOWED_FOLDERS=sharepoint-rag-knowledge-base
+SHAREPOINT_LIMIT=10
+SHAREPOINT_TIMEOUT_SECONDS=30
+SHAREPOINT_CONTENT_CHAR_LIMIT=20000

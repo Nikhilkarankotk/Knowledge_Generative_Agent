@@ -22,3 +22,7 @@ class MistralApiService:
         """Upload a file and OCR it. Used by RAG ingest for image files."""
         file_id = self._client.upload_file(filename or "upload", content)
         return self._client.ocr_process(file_id, "Extract text from the uploaded image.")
+
+    def close(self) -> None:
+        """Release the underlying HTTP client (called after the request completes)."""
+        self._client.close()

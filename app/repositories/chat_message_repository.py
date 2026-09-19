@@ -38,6 +38,22 @@ class ChatMessageRepository:
         )
         return list(self._session.scalars(stmt).all())
 
+    def find_last_user_message(
+        self, session_id: str, before_message_id: int
+    ) -> ChatMessage | None:
+        """Return the nearest user message preceding ``before_message_id`` in a session."""
+        stmt = (
+            select(ChatMessage)
+            .where(
+                ChatMessage.session_id == session_id,
+                ChatMessage.role == "user",
+                ChatMessage.id < before_message_id,
+            )
+            .order_by(ChatMessage.id.desc())
+            .limit(1)
+        )
+        return self._session.scalar(stmt)
+
     def find_recent_chat_sessions(self) -> list[ChatMessage]:
         min_ids = (
             select(func.min(ChatMessage.id).label("min_id"))

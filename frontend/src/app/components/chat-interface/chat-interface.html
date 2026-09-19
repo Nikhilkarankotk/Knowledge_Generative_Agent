@@ -90,6 +90,17 @@
                 <span class="tooltip">{{ msg.copied ? 'Message Copied' : 'Copy message' }}</span>
               </button>
             </div>
+            <div class="tooltip-container" *ngIf="msg.id">
+              <button class="action-btn" (click)="exportMessage(msg)"
+                [class.active]="exportedMessageId === msg.id"
+                [disabled]="exportingMessageId !== null && exportingMessageId !== msg.id"
+                title="Export response as TXT">
+                <span class="mini-spinner" *ngIf="exportingMessageId === msg.id"></span>
+                <svg *ngIf="exportingMessageId !== msg.id && exportedMessageId !== msg.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                <svg *ngIf="exportedMessageId === msg.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <span class="tooltip">{{ exportingMessageId === msg.id ? 'Preparing response…' : (exportedMessageId === msg.id ? 'Response exported' : 'Export response') }}</span>
+              </button>
+            </div>
             <button class="action-btn" [class.active]="msg.rating === 1" (click)="rateMessage(msg, 1)" title="Helpful" *ngIf="msg.id">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
             </button>
