@@ -2,7 +2,7 @@
   <app-sidebar #sidebar (newChat)="chatInterface.clearChat(); sidebar.loadSessions()" (selectChat)="chatInterface.loadChat($event)"></app-sidebar>
   <main class="dashboard-shell">
     <mat-toolbar class="topbar">
-      <div class="workspace-title"><span class="eyebrow">ASK PNC</span><span class="enterprise-name">Enterprise Brain</span></div>
+      <div class="workspace-title"><span class="workspace-welcome">Welcome</span></div>
       <span class="toolbar-spacer"></span>
       <button mat-icon-button class="help-button" aria-label="Help"><mat-icon>help_outline</mat-icon></button>
       <button mat-icon-button matBadge="2" matBadgeColor="warn" matBadgeSize="small" aria-label="Knowledge notifications"><mat-icon>notifications_none</mat-icon></button>
@@ -12,12 +12,22 @@
       </div>
     </mat-toolbar>
     <section class="dashboard-content">
-      <div class="page-heading"><div><p class="section-kicker">KNOWLEDGE WORKSPACE</p><h1>Welcome</h1><p>Explore trusted enterprise knowledge and turn insight into action.</p></div><button mat-flat-button class="primary-action" (click)="chatInterface.clearChat()"><mat-icon>add</mat-icon> New inquiry</button></div>
-      <section class="summary-grid" aria-label="Knowledge overview">
-        <mat-card class="dashboard-card alert-card"><div class="card-heading"><div><mat-icon class="orange-icon">campaign</mat-icon><span>Knowledge Alerts</span></div><span class="count-pill">2 new</span></div>@for (alert of alerts; track alert.title) {<div class="alert-row"><span class="status-dot" [class.warning]="alert.tone === 'warning'"></span><div><strong>{{ alert.title }}</strong><p>{{ alert.detail }}</p></div></div>}<button mat-button class="text-action">Review alerts <mat-icon>arrow_forward</mat-icon></button></mat-card>
-        <mat-card class="dashboard-card health-card"><div class="card-heading"><div><mat-icon class="teal-icon">verified</mat-icon><span>Knowledge Health</span></div><button mat-icon-button aria-label="Knowledge Health information"><mat-icon>more_horiz</mat-icon></button></div><div class="health-content"><div class="gauge health-pie" aria-label="Knowledge health: 89 percent"><span>89<small>%</small></span><em>Healthy</em></div><div class="health-meter"><strong>Knowledge health meter</strong><p>1,248 sources monitored</p><div class="health-key"><span class="well"></span>Well documented <b>124</b></div><div class="health-key"><span class="review"></span>Needs update <b>38</b></div><div class="health-key"><span class="risk"></span>At risk <b>12</b></div></div></div></mat-card>
-        <mat-card class="dashboard-card changes-card"><div class="card-heading"><div><mat-icon class="purple-icon">history</mat-icon><span>Recent Changes</span></div><button mat-button class="text-action">View all</button></div>@for (change of changes; track change.title) {<div class="change-row"><div class="change-icon"><mat-icon>{{ change.icon }}</mat-icon></div><div><strong>{{ change.title }}</strong><p>{{ change.detail }}</p></div></div>}</mat-card>
-        <mat-card class="dashboard-card experts-card"><div class="card-heading"><div><mat-icon class="blue-icon">groups</mat-icon><span>Top Experts</span></div><button mat-button class="text-action">View all</button></div>@if (experts.length) {@for (expert of experts; track expert.name) {<div class="expert-row" [matTooltip]="expert.reason"><span class="expert-avatar">{{ expert.initials }}</span><div><strong>{{ expert.name }}</strong><p>{{ expert.role }} · {{ expert.source }}</p></div><span class="expert-label">SME</span></div>}} @else {<p class="experts-empty">No experts identified for this topic</p>}</mat-card>
+      <div class="page-heading"><button mat-flat-button class="primary-action" (click)="chatInterface.clearChat()"><mat-icon>add</mat-icon> New inquiry</button></div>
+      <section class="insights-section" aria-label="Knowledge overview" (mouseenter)="insightsOpen = true" (mouseleave)="insightsOpen = false">
+        <header class="insights-header">
+          <div class="insights-title"><span class="section-kicker">KNOWLEDGE OVERVIEW</span><h2>Explore what changed</h2></div>
+          <span class="insights-preview">Alerts &middot; Health &middot; Experts</span>
+          <button type="button" class="insights-toggle" (click)="toggleInsights()" (keydown.enter.prevent)="toggleInsights()" (keydown.space.prevent)="toggleInsights()" [attr.aria-expanded]="insightsOpen" aria-controls="insightsCards" aria-label="Show or hide knowledge overview cards"><mat-icon>expand_more</mat-icon></button>
+        </header>
+        <div class="insights-collapse" id="insightsCards" [class.open]="insightsOpen">
+          <div class="insights-inner">
+            <section class="summary-grid" aria-label="Knowledge overview cards">
+              <mat-card class="dashboard-card alert-card"><div class="card-heading"><div><mat-icon class="orange-icon">campaign</mat-icon><span>Knowledge Alerts</span></div><span class="count-pill">2 new</span></div>@for (alert of alerts; track alert.title) {<div class="alert-row"><span class="status-dot" [class.warning]="alert.tone === 'warning'"></span><div><strong>{{ alert.title }}</strong><p>{{ alert.detail }}</p></div></div>}<button mat-button class="text-action">Review alerts <mat-icon>arrow_forward</mat-icon></button></mat-card>
+              <mat-card class="dashboard-card health-card"><div class="card-heading"><div><mat-icon class="teal-icon">verified</mat-icon><span>Knowledge Health</span></div><button mat-icon-button aria-label="Knowledge Health information"><mat-icon>more_horiz</mat-icon></button></div><div class="health-content"><div class="gauge health-pie" aria-label="Knowledge health: 89 percent"><span>89<small>%</small></span><em>Healthy</em></div><div class="health-meter"><strong>Knowledge health meter</strong><p>1,248 sources monitored</p><div class="health-key"><span class="well"></span>Well documented <b>124</b></div><div class="health-key"><span class="review"></span>Needs update <b>38</b></div><div class="health-key"><span class="risk"></span>At risk <b>12</b></div></div></div></mat-card>
+              <mat-card class="dashboard-card experts-card"><div class="card-heading"><div><mat-icon class="blue-icon">groups</mat-icon><span>Top Experts</span></div><button mat-button class="text-action">View all</button></div>@if (experts.length) {@for (expert of experts; track expert.name) {<div class="expert-row" [matTooltip]="expert.reason"><span class="expert-avatar">{{ expert.initials }}</span><div><strong>{{ expert.name }}</strong><p>{{ expert.role }} · {{ expert.source }}</p></div><span class="expert-label">SME</span></div>}} @else {<p class="experts-empty">No experts identified for this topic</p>}</mat-card>
+            </section>
+          </div>
+        </div>
       </section>
       <section class="workspace-grid">
         <div class="conversation-column"><mat-card class="dashboard-card conversation-card"><div class="card-heading"><div><span class="live-dot"></span><span>AI Response</span></div><span class="trusted-label"><mat-icon>verified_user</mat-icon> Trusted knowledge</span></div><app-chat-interface #chatInterface (messageSent)="sidebar.loadSessions(); loadExperts()"></app-chat-interface></mat-card></div>

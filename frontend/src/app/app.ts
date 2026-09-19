@@ -30,14 +30,15 @@ export interface Expert {
 export class App implements OnInit {
   private api = inject(Api);
 
+  insightsOpen = false;
+
+  toggleInsights(): void {
+    this.insightsOpen = !this.insightsOpen;
+  }
+
   readonly alerts = [
     { title: 'Policy refresh required', detail: 'Information Security Policy expires in 12 days.', tone: 'warning' },
     { title: 'New source indexed', detail: 'Q3 Treasury Operating Plan is ready to ask.', tone: 'success' },
-  ];
-  readonly changes = [
-    { title: 'Vendor risk framework', detail: 'Updated today · Governance', icon: 'edit_note' },
-    { title: 'Client onboarding playbook', detail: 'Updated yesterday · Operations', icon: 'description' },
-    { title: 'Liquidity reporting guide', detail: 'Updated Sep 10 · Finance', icon: 'account_balance' },
   ];
   readonly searches = ['Treasury management', 'Client onboarding', 'Risk appetite', 'Cybersecurity controls'];
 
