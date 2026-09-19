@@ -168,7 +168,13 @@ def test_agent_history_is_rebuilt_from_db_each_turn(db_session) -> None:
         for message in second_turn_snapshot.messages
         if message.role == AuthorRole.ASSISTANT and message.content
     ]
-    assert reply1.content in prior_answers
+    # The persisted answer carries the "Sources" footer for the user; the model
+    # is shown the answer text only (footer stripped) so it never copies it.
+    from app.export.sources_footer import strip_sources_footer
+
+    assert "**Sources**" in reply1.content
+    assert strip_sources_footer(reply1.content) in prior_answers
+    assert all("**Sources**" not in answer for answer in prior_answers)
 
 
 def test_agent_failure_falls_back_to_legacy_prompt_path(db_session) -> None:

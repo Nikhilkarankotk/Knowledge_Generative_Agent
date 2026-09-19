@@ -1,13 +1,14 @@
 import { Component, inject, ElementRef, ViewChild, AfterViewChecked, ChangeDetectorRef, OnInit, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { Api } from '../../services/api/api';
 import { marked } from 'marked';
 
 export interface Message {
   id?: number;
   content: string;
-  htmlContent?: string;
+  htmlContent?: SafeHtml;
   role: 'user' | 'assistant';
   timestamp: Date;
   isError?: boolean;
@@ -26,6 +27,37 @@ export interface Message {
 export class ChatInterface implements AfterViewChecked, OnInit {
   private api = inject(Api);
   private cdr = inject(ChangeDetectorRef);
+  private sanitizer = inject(DomSanitizer);
+
+  /**
+   * Render assistant markdown to HTML. Source links (the "Sources" footer the
+   * backend appends, plus any inline citation links) open in a new tab so the
+   * user never navigates away from the chat; only http(s) links are allowed.
+   * The footer block is tagged so it can be styled as a compact reference list.
+   */
+  private async renderMarkdown(markdown: string): Promise<SafeHtml> {
+    const raw = await marked.parse(markdown || '');
+    const doc = new DOMParser().parseFromString(raw, 'text/html');
+    doc.querySelectorAll('a[href]').forEach((a) => {
+      const href = a.getAttribute('href') || '';
+      if (!/^https?:\/\//i.test(href)) {
+        a.removeAttribute('href');
+        return;
+      }
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+    });
+    // Mark the "Sources" footer: <hr> followed by a paragraph whose text is "Sources".
+    doc.querySelectorAll('hr').forEach((hr) => {
+      const heading = hr.nextElementSibling;
+      if (heading && heading.textContent?.trim() === 'Sources') {
+        hr.classList.add('sources-rule');
+        heading.classList.add('sources-heading');
+        heading.nextElementSibling?.classList.add('sources-list');
+      }
+    });
+    return this.sanitizer.bypassSecurityTrustHtml(doc.body.innerHTML);
+  }
 
   @Output() messageSent = new EventEmitter<void>();
 
@@ -90,7 +122,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         this.messages = [];
         for (const msg of history ?? []) {
           const parsedContent = msg.content || '';
-          const htmlParsed = msg.role === 'assistant' ? await marked.parse(parsedContent) : undefined;
+          const htmlParsed = msg.role === 'assistant' ? await this.renderMarkdown(parsedContent) : undefined;
 
           this.messages.push({
             id: msg.id,
@@ -135,7 +167,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         this.isLoading = false;
         try {
           const messageText = res.content || JSON.stringify(res);
-          const htmlParsed = await marked.parse(messageText);
+          const htmlParsed = await this.renderMarkdown(messageText);
 
           this.messages.push({
             id: res.id,

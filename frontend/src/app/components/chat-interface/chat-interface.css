@@ -474,6 +474,32 @@
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.markdown-body a {
+  color: var(--accent-color, #7aa2f7);
+  text-decoration: underline;
+  text-decoration-color: rgba(122, 162, 247, 0.45);
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+.markdown-body a:hover { text-decoration-color: currentColor; }
+
+/* "Sources" footer appended to grounded answers: compact reference list. */
+.markdown-body hr.sources-rule { margin-top: 1em; }
+.markdown-body .sources-heading {
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #b9c9e6);
+  margin-bottom: 0.25em;
+}
+.markdown-body .sources-list {
+  font-size: 0.86rem;
+  padding-left: 1.1em;
+  color: var(--text-secondary, #b9c9e6);
+}
+.markdown-body .sources-list li { margin-bottom: 0.1em; }
+.markdown-body .sources-list strong { color: var(--text-primary); font-weight: 600; }
+
 .markdown-body code {
   background: rgba(255, 255, 255, 0.05);
   padding: 0.2em 0.4em;

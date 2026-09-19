@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from semantic_kernel.contents import ChatHistory
 
+from app.export.sources_footer import strip_sources_footer
 from app.models import ChatMessage
 
 
@@ -38,7 +39,9 @@ def build_agent_chat_history(
         if message.role == "user":
             history.add_user_message(message.content or "")
         elif message.role == "assistant":
-            history.add_assistant_message(message.content or "")
+            # The "Sources" footer is presentation for the user; the model should
+            # see the answer text only, or it starts copying old footers.
+            history.add_assistant_message(strip_sources_footer(message.content or ""))
 
     if current_user_message is not None:
         history.add_user_message(current_user_message)

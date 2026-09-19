@@ -259,6 +259,86 @@ def heuristic_sources(user_message: str, available: Sequence[str]) -> list[str]:
     return [available[0]] if available else []
 
 
+# Phrases that widen a question beyond the source it names explicitly, e.g.
+# "...from the attached document AND ALSO the Job Portal architecture across our
+# connected knowledge sources".
+_BREADTH_MARKERS: tuple[str, ...] = (
+    "and also",
+    "also retrieve",
+    "also find",
+    "also search",
+    "also check",
+    "also look",
+    "as well as",
+    "along with",
+    "in addition",
+    "additionally",
+    "across our",
+    "across all",
+    "across the",
+    "all connected",
+    "connected knowledge",
+    "all knowledge sources",
+    "knowledge sources",
+    "every source",
+    "all sources",
+    "other sources",
+)
+
+# Topic words that only a documentation/code source can answer; when they appear
+# together with an explicit "uploaded document" reference, the question spans
+# more than the upload.
+_NON_UPLOAD_TOPICS: tuple[str, ...] = (
+    "architecture",
+    "system design",
+    "workflow",
+    "analysis report",
+    "repository",
+    "repo",
+    "source code",
+    "codebase",
+    "implementation",
+    "confluence",
+    "sharepoint",
+    "github",
+)
+
+
+def _asks_beyond_explicit_sources(user_message: str, explicit: Sequence[str]) -> bool:
+    """True when the question also asks for knowledge outside its explicit source(s)."""
+    text = " ".join((user_message or "").casefold().split())
+    if any(marker in text for marker in _BREADTH_MARKERS):
+        return True
+    # "knowledge" (an uploaded file) named explicitly, but the question is also
+    # about architecture / workflow / a repository -> other sources are needed.
+    if list(explicit) == ["knowledge"] and any(topic in text for topic in _NON_UPLOAD_TOPICS):
+        return True
+    return False
+
+
+def _ensure_named_repository_source(
+    user_message: str, selections: list[SourceSelection], available: Sequence[str]
+) -> list[SourceSelection]:
+    """Add ``github`` when the question names an application in a way the router
+    can map to a configured repository, but the plan omitted GitHub.
+
+    The router itself decides *which* repository (it has the allowlist); the
+    planner only needs to make sure GitHub is consulted at all.
+    """
+    if "github" not in available or any(s.type == "github" for s in selections):
+        return selections
+    text = (user_message or "").casefold()
+    if any(term in text for term in ("architecture", "workflow", "implementation", "analysis report", "source code", "repository", "repo")):
+        selections.append(
+            SourceSelection(
+                "github",
+                "question asks about an application's architecture/workflow; the "
+                "configured repository (if any) is consulted",
+            )
+        )
+    return selections
+
+
 # Documentation sources that hold *different* documents and must be searched
 # together: a design or pipeline document may live in either system.
 _DOCUMENTATION_SOURCES: tuple[str, ...] = ("confluence", "sharepoint")
@@ -346,13 +426,22 @@ class LLMSourcePlanner:
 
     def plan(self, user_message: str, available: Sequence[str]) -> list[SourceSelection]:
         available = tuple(dict.fromkeys(available))
-        explicit = detect_explicit_sources(user_message, available)
-        if explicit:
-            logger.info("Source planner honored explicit request: %s", explicit)
-            return [SourceSelection(source, "explicit user request") for source in explicit]
         if not available:
             return []
+        explicit = detect_explicit_sources(user_message, available)
+        selections: list[SourceSelection] = [
+            SourceSelection(source, "explicit user request") for source in explicit
+        ]
+        if explicit and not _asks_beyond_explicit_sources(user_message, explicit):
+            # A pure "Search GitHub for X" style request: honor it verbatim.
+            logger.info("Source planner honored explicit request: %s", explicit)
+            return selections
 
+        # Either nothing explicit, or the question ALSO asks about things the
+        # explicit source cannot answer (e.g. "retrieve the CI/CD flow of the
+        # attached document AND the Job Portal architecture across our connected
+        # knowledge sources"). The explicit sources are kept and the model plans
+        # the rest - an explicit mention must never *suppress* other sources.
         raw = ""
         try:
             raw = self._complete(self.build_prompt(user_message, available)) or ""
@@ -361,14 +450,25 @@ class LLMSourcePlanner:
 
         planned = parse_source_plan(raw, available)
         if planned is not None:
-            selections = [SourceSelection(source, "selected by the source planner") for source in planned]
+            chosen = {s.type for s in selections}
+            selections.extend(
+                SourceSelection(source, "selected by the source planner")
+                for source in planned
+                if source not in chosen
+            )
             selections = pair_documentation_sources(selections, available)
+            if explicit:
+                selections = _ensure_named_repository_source(user_message, selections, available)
             logger.info("Source planner selected %s", [s.type for s in selections])
             return selections
 
         fallback = heuristic_sources(user_message, available)
-        logger.info("Source planner keyword fallback selected %s", fallback)
-        return [SourceSelection(source, "keyword fallback") for source in fallback]
+        chosen = {s.type for s in selections}
+        selections.extend(
+            SourceSelection(source, "keyword fallback") for source in fallback if source not in chosen
+        )
+        logger.info("Source planner keyword fallback selected %s", [s.type for s in selections])
+        return selections
 
     def build_prompt(self, user_message: str, available: Sequence[str]) -> str:
         lines = [

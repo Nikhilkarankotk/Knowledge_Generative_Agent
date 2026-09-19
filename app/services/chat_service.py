@@ -31,6 +31,7 @@ from app.services.confluence_service import ConfluenceService
 from app.services.conversation_memory_service import ConversationMemoryService
 from app.services.mistral_api_service import MistralApiService
 from app.services.translation_service import TranslationService
+from app.export.sources_footer import append_sources_footer
 from app.sk.chat_history_builder import build_agent_chat_history
 
 logger = logging.getLogger(__name__)
@@ -106,15 +107,18 @@ class ChatService:
         )
 
         self._memory_service.add_exchange(session_id, user_message, final_response)
-        assistant = self._save_assistant_message(session_id, final_response)
         promoted = capture.promote_relevant_candidates(user_message, final_response)
         if promoted:
             logger.info(
-                "Export capture: promoted %d Confluence search hit(s) referenced by the "
-                "answer to exportable: %s",
+                "Export capture: promoted %d search hit(s) referenced by the answer to "
+                "exportable: %s",
                 len(promoted),
                 promoted,
             )
+        # Cite exactly the documents that grounded the answer (the same set the
+        # Export button downloads), each linked to where it was retrieved from.
+        final_response = append_sources_footer(final_response, capture.items)
+        assistant = self._save_assistant_message(session_id, final_response)
         self._commit_export_context(session_id, assistant.id, capture)
         return assistant
 
@@ -175,9 +179,10 @@ class ChatService:
         # 6. Store Exchange in Memory
         self._memory_service.add_exchange(session_id, user_message, final_response)
 
-        # 7. Save Assistant Response to DB
-        assistant = self._save_assistant_message(session_id, final_response, user_lang_code=user_lang_code)
+        # 7. Save Assistant Response to DB (with the Sources footer)
         capture.promote_relevant_candidates(user_message, final_response)
+        final_response = append_sources_footer(final_response, capture.items)
+        assistant = self._save_assistant_message(session_id, final_response, user_lang_code=user_lang_code)
         self._commit_export_context(session_id, assistant.id, capture)
         return assistant
 

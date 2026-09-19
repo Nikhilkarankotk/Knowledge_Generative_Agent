@@ -22,9 +22,101 @@ from app.sk.source_planner import (
     heuristic_sources,
     parse_source_plan,
 )
+from app.sk.source_router import (
+    SourceRouter,
+    _parse_allowed_repositories,
+    _repository_matches,
+)
 from tests.fake_sk_service import ScriptedChatCompletion, received_text
 
 ALL_SOURCES = ["knowledge", "confluence", "sharepoint", "github"]
+
+
+# --- GitHub pre-retrieval: repository listing + matching -------------------------
+
+_BULLET_LISTING = (
+    "[Source: GitHub] Configured repositories for this Knowledge Generative Agent:\n"
+    "- nikhilkarankotk/E-commerce_Application\n"
+    "- nikhilkarankotk/Job_Portal_Web_Application\n"
+    "- nikhilkarankotk/express\n"
+    "- nikhilkarankotk/n8n\n"
+)
+
+
+def test_parse_allowed_repositories_reads_bullet_listing() -> None:
+    """Regression: the router parsed only '[Source: GitHub: owner/repo]' lines,
+    so the real '- owner/repo' listing yielded 0 repositories and GitHub was
+    silently skipped (missing GitHub/ folder in the export)."""
+    assert _parse_allowed_repositories(_BULLET_LISTING) == [
+        "nikhilkarankotk/E-commerce_Application",
+        "nikhilkarankotk/Job_Portal_Web_Application",
+        "nikhilkarankotk/express",
+        "nikhilkarankotk/n8n",
+    ]
+    # The legacy per-repo attribution format still works.
+    assert _parse_allowed_repositories("[Source: GitHub: acme/payments]\nURL: x") == ["acme/payments"]
+
+
+def test_repository_matches_multi_word_names_split_on_separators() -> None:
+    q = (
+        "retrieve the CICD architecture of n8n from the document. and also retrieve job "
+        "portal web application architecture, functionality workflow"
+    )
+    assert _repository_matches("nikhilkarankotk/Job_Portal_Web_Application", q)
+    assert _repository_matches("nikhilkarankotk/n8n", q)
+    assert not _repository_matches("nikhilkarankotk/E-commerce_Application", q)
+    # Generic single-word repos must appear as a whole word, not a substring.
+    assert not _repository_matches("nikhilkarankotk/express", "explain the expression parser")
+    assert _repository_matches("nikhilkarankotk/express", "how does the express app route?")
+
+
+class _ListingGitHubPlugin:
+    def __init__(self) -> None:
+        self.retrieved: list[str] = []
+
+    def list_allowed_repositories(self) -> str:
+        return _BULLET_LISTING
+
+    def retrieve_repository_contents(self, repo: str) -> str:
+        self.retrieved.append(repo)
+        return f"[Source: GitHub: {repo}:README.md]\ncontents"
+
+
+def test_router_retrieves_every_repository_named_in_the_question() -> None:
+    plugin = _ListingGitHubPlugin()
+    text = SourceRouter()._retrieve_github(
+        plugin, "n8n CICD architecture and the job portal web application workflow"
+    )
+    assert plugin.retrieved == [
+        "nikhilkarankotk/Job_Portal_Web_Application",
+        "nikhilkarankotk/n8n",
+    ]
+    assert "[Source: GitHub: nikhilkarankotk/n8n:README.md]" in text
+
+
+def test_router_does_not_guess_a_repository_when_none_is_named() -> None:
+    plugin = _ListingGitHubPlugin()
+    SourceRouter()._retrieve_github(plugin, "What is our deployment policy?")
+    assert plugin.retrieved == []  # never export an unrelated first-alphabetical repo
+
+
+def test_rendered_evidence_neutralizes_prompt_template_syntax() -> None:
+    """Regression: a GitHub Actions workflow containing '${{ inputs.node-version }}'
+    in the pre-fetched evidence made Semantic Kernel fail the whole turn with
+    'Failed to tokenize code block'. The evidence must not be parsed as a template."""
+    from app.sk.source_planner import SourceSelection
+    from app.sk.source_router import PrefetchResult, neutralize_template_syntax, render_evidence
+
+    raw = "node-version: ${{ inputs.node-version }}\nname: {{ .Release.Name }}"
+    assert "{{" not in neutralize_template_syntax(raw)
+    assert "}}" not in neutralize_template_syntax(raw)
+    # The human-visible characters are unchanged (only a zero-width space is added).
+    assert neutralize_template_syntax(raw).replace("\u200b", "") == raw
+
+    result = PrefetchResult(evidence=[("github", raw)], used=["github"])
+    rendered = render_evidence(result, [SourceSelection("github", "test")])
+    assert "{{" not in rendered and "}}" not in rendered
+    assert "inputs.node-version" in rendered
 
 
 # --- stubs ---------------------------------------------------------------------
@@ -213,6 +305,50 @@ def test_planner_pairing_leaves_non_documentation_plans_alone() -> None:
     only_code = [SourceSelection("github", "x")]
     assert pair_documentation_sources(only_code, ALL_SOURCES) == only_code
     assert pair_documentation_sources([], ALL_SOURCES) == []
+
+
+def test_explicit_upload_reference_does_not_suppress_other_sources() -> None:
+    """Regression: "retrieve the CI/CD architecture of the attached document, and
+    also the Job Portal architecture ... across our connected knowledge source"
+    matched the explicit 'knowledge' alias and short-circuited the planner, so
+    only the upload was searched - the GitHub/ folder vanished from the export."""
+    q = (
+        "retrieve the CICD architecture of attached document. and also retrieve job "
+        "portal web application architecture, functionality workflow, analysis report "
+        "and relevant data available across our connected knowledge source"
+    )
+    planner = planning(["confluence", "sharepoint", "github"])  # what the model would add
+    types = [s.type for s in planner.plan(q, ALL_SOURCES)]
+    assert types[0] == "knowledge"  # the explicit upload is kept first
+    assert set(types) == {"knowledge", "confluence", "sharepoint", "github"}
+
+
+def test_pure_explicit_request_is_still_honored_verbatim() -> None:
+    """A plain "Search GitHub for X" must not be widened by the model plan."""
+    planner = planning(["confluence", "sharepoint"])  # model would (wrongly) add these
+    assert [s.type for s in planner.plan("Search GitHub for the charge function", ALL_SOURCES)] == [
+        "github"
+    ]
+
+
+def test_explicit_upload_plus_architecture_adds_github_even_if_model_omits_it() -> None:
+    from app.sk.source_planner import _asks_beyond_explicit_sources, detect_explicit_sources
+
+    q = "read the attached document and explain the job portal web application architecture"
+    assert detect_explicit_sources(q, ALL_SOURCES) == ["knowledge"]
+    assert _asks_beyond_explicit_sources(q, ["knowledge"])
+    planner = planning(["confluence"])  # model forgot github
+    types = [s.type for s in planner.plan(q, ALL_SOURCES)]
+    assert "github" in types and "knowledge" in types
+
+
+def test_simple_upload_question_stays_upload_only() -> None:
+    from app.sk.source_planner import detect_explicit_sources
+
+    q = "Read my uploaded document and summarize it"
+    assert detect_explicit_sources(q, ALL_SOURCES) == ["knowledge"]
+    planner = planning(["confluence", "github"])  # would be wrong to add
+    assert [s.type for s in planner.plan(q, ALL_SOURCES)] == ["knowledge"]
 
 
 def test_planner_selects_github_only() -> None:

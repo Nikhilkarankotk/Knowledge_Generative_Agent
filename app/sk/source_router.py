@@ -85,7 +85,27 @@ class SourceRouter:
         listing = str(plugin.list_allowed_repositories() or "")
         repositories = _parse_allowed_repositories(listing)
         matched = [repo for repo in repositories if _repository_matches(repo, query)]
-        selected = matched or repositories[: self._github_max_repositories]
+        if matched:
+            # Every repository the question names is retrieved (a question may
+            # span several applications), bounded to avoid runaway retrieval.
+            selected = matched[: max(self._github_max_repositories, 3)]
+            logger.info("GitHub pre-retrieval matched repositories %s", selected)
+        elif len(repositories) == 1:
+            # A single configured repository is unambiguous.
+            selected = repositories
+        elif repositories:
+            # Several repositories and none is named in the question: do NOT
+            # guess (the first alphabetical repo would be exported as if it were
+            # relevant). The agent can still call GitHub tools itself if the
+            # answer needs code evidence.
+            selected = []
+            logger.info(
+                "GitHub pre-retrieval: none of the %d configured repositories is "
+                "named in the question; skipping repository retrieval",
+                len(repositories),
+            )
+        else:
+            selected = []
         parts = [listing]
         for repo in selected:
             try:
@@ -95,25 +115,93 @@ class SourceRouter:
         return "\n\n".join(part for part in parts if part)
 
 
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
 def _parse_allowed_repositories(text: str) -> list[str]:
-    """Extract ``owner/name`` repositories from a list_allowed_repositories result."""
+    """Extract ``owner/name`` repositories from a ``list_allowed_repositories`` result.
+
+    Accepts both formats the plugin has produced: one ``[Source: GitHub: owner/name]``
+    attribution line per repository, and the current listing of ``- owner/name``
+    bullets under a single ``[Source: GitHub]`` header.
+    """
     repositories: list[str] = []
+
+    def add(candidate: str) -> None:
+        candidate = candidate.strip().split(":", 1)[0].strip()
+        if candidate and "#" not in candidate and _REPO_RE.match(candidate):
+            if candidate not in repositories:
+                repositories.append(candidate)
+
     for line in (text or "").splitlines():
-        if not line.startswith("[Source: GitHub:"):
-            continue
-        raw = line[len("[Source: GitHub:") :].split("]", 1)[0].strip()
-        raw = raw.split(":", 1)[0].strip()
-        if not raw or "#" in raw:
-            continue
-        if raw not in repositories:
-            repositories.append(raw)
+        stripped = line.strip()
+        if stripped.startswith("[Source: GitHub:"):
+            add(stripped[len("[Source: GitHub:") :].split("]", 1)[0])
+        elif stripped.startswith(("- ", "* ", "• ")):
+            add(stripped[2:])
     return repositories
 
 
+def _repo_tokens(value: str) -> list[str]:
+    """Lower-cased word tokens of a repo name or question (``Job_Portal-Web`` ->
+    ``job portal web``)."""
+    return [t for t in re.split(r"[^a-z0-9]+", (value or "").casefold()) if t]
+
+
 def _repository_matches(repo: str, query: str) -> bool:
-    """Best-effort match of a repository name against the user's question."""
-    name = repo.rsplit("/", 1)[-1].casefold()
-    return bool(name) and name in (query or "").casefold()
+    """Best-effort match of a repository against the user's question.
+
+    A repository matches when its name appears verbatim, or when every word of
+    its name (split on ``_``/``-``/case) appears in the question in order - so
+    ``Job_Portal_Web_Application`` matches "job portal web application" and
+    ``n8n`` matches "the CICD architecture of n8n", while generic single-word
+    repositories such as ``express`` must appear as a whole word.
+    """
+    name = repo.rsplit("/", 1)[-1]
+    if not name:
+        return False
+    # Verbatim repo name as a whole word ("...of n8n from...", "Job_Portal_Web_Application").
+    if re.search(rf"(?<![a-z0-9]){re.escape(name.casefold())}(?![a-z0-9])", (query or "").casefold()):
+        return True
+    words = _repo_tokens(name)
+    query_words = _repo_tokens(query)
+    if not words:
+        return False
+    if len(words) == 1:
+        return words[0] in query_words
+    # All name words present, in order (allowing gaps), e.g. "job portal web
+    # application". The words must appear as a contiguous phrase modulo generic
+    # filler, otherwise "E-commerce_Application" would match any question that
+    # mentions an "e"... and an "application" somewhere.
+    joined_query = " ".join(query_words)
+    joined_name = " ".join(words)
+    if joined_name in joined_query:
+        return True
+    # Allow the generic suffix words to be omitted from the question:
+    # "job portal" alone matches Job_Portal_Web_Application.
+    generic = {"application", "app", "web", "service", "project", "repo", "repository"}
+    core = [w for w in words if w not in generic]
+    return len(core) >= 1 and " ".join(core) in joined_query and any(len(w) > 2 for w in core)
+
+
+_TEMPLATE_OPEN = re.compile(r"\{\{")
+_TEMPLATE_CLOSE = re.compile(r"\}\}")
+
+
+def neutralize_template_syntax(text: str) -> str:
+    """Make retrieved content safe to embed in the agent's instructions.
+
+    The instructions are rendered by Semantic Kernel's prompt template engine,
+    which treats ``{{ ... }}`` as a function call. Real repository content
+    routinely contains that syntax (GitHub Actions ``${{ inputs.node-version }}``,
+    Handlebars/Jinja templates, Helm charts...) and would make the whole turn
+    fail with "Failed to tokenize code block". Insert a zero-width space between
+    the braces so the text reads the same to the model but is no longer a token.
+    """
+    if not text or "{{" not in text and "}}" not in text:
+        return text
+    text = _TEMPLATE_OPEN.sub("{\u200b{", text)
+    return _TEMPLATE_CLOSE.sub("}\u200b}", text)
 
 
 def render_evidence(result: PrefetchResult, selections: list[SourceSelection]) -> str:
@@ -141,7 +229,7 @@ def render_evidence(result: PrefetchResult, selections: list[SourceSelection]) -
             lines.append(f"Plan rationale for {source}: {reason}")
     for source, text in result.evidence:
         lines.append(f"--- {source.upper()} EVIDENCE ---")
-        lines.append((text or "(no evidence returned)").strip())
+        lines.append(neutralize_template_syntax((text or "(no evidence returned)").strip()))
     lines.extend(
         [
             "=== END RETRIEVED EVIDENCE ===",
