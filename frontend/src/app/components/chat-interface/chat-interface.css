@@ -395,6 +395,13 @@
   padding: 12px 4px;
   outline: none;
   font-family: inherit;
+  /* Multi-line paste support: preserve newlines, wrap long lines, auto-grow. */
+  resize: none;
+  overflow-y: auto;
+  max-height: 200px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .text-input::placeholder { color: var(--text-muted); }

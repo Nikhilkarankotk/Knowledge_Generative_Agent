@@ -199,9 +199,10 @@
       <input #fileInput id="file-upload" type="file" style="display:none" multiple (change)="onFileSelected($event)"
         accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.log,.rst,.csv,.tsv,.json,.html,.htm,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tiff,.tif,.svg">
 
-      <!-- Text Input -->
-      <input type="text" [(ngModel)]="userInput" (keyup.enter)="sendMessage()" placeholder="Type your message..."
-        [disabled]="isLoading" class="text-input" />
+      <!-- Text Input (multi-line: preserves pasted formatting, Enter sends, Shift+Enter = new line) -->
+      <textarea #messageInput rows="1" [(ngModel)]="userInput" (keydown)="onInputKeydown($event)"
+        (input)="autoGrow($event)" placeholder="Type your message..." [disabled]="isLoading"
+        class="text-input" wrap="soft"></textarea>
 
       <!-- Send Button -->
       <button class="send-btn" (click)="sendMessage()" [disabled]="!userInput.trim() || isLoading">

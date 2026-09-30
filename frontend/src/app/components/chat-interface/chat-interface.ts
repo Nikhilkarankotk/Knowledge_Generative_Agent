@@ -91,6 +91,7 @@ export class ChatInterface implements AfterViewChecked, OnInit {
 
   @ViewChild('chatContainer') private chatContainer!: ElementRef;
   @ViewChild('fileInput') private fileInput!: ElementRef;
+  @ViewChild('messageInput') private messageInput!: ElementRef<HTMLTextAreaElement>;
 
   ngOnInit() {
     this.loadHistory();
@@ -163,6 +164,8 @@ export class ChatInterface implements AfterViewChecked, OnInit {
       this.attachedCollapsed = true;
     }
     this.userInput = '';
+    // Collapse the auto-grown textarea back to a single row after sending.
+    setTimeout(() => this.resizeTextarea(this.messageInput?.nativeElement), 0);
     this.isLoading = true;
 
     this.api.sendChatMessage(text).subscribe({
@@ -414,6 +417,30 @@ export class ChatInterface implements AfterViewChecked, OnInit {
         alert('Failed to submit correction.');
       }
     });
+  }
+
+  /**
+   * Enter sends the message; Shift+Enter inserts a new line. This keeps
+   * multi-line / pasted content (code, logs, lists) intact instead of
+   * submitting on the first newline.
+   */
+  onInputKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      this.sendMessage();
+    }
+  }
+
+  /** Grow the textarea with its content, up to a max height (then scroll). */
+  autoGrow(event: Event) {
+    const el = event.target as HTMLTextAreaElement;
+    this.resizeTextarea(el);
+  }
+
+  private resizeTextarea(el: HTMLTextAreaElement | undefined) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }
 
   formatTime(date: Date): string {
